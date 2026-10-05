@@ -1,0 +1,46 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+
+# static/uploads/ is committed — Sveltia writes images here and the
+# GitHub webhook delivers them to the server. Move to R2 when volume justifies it.
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# pi
+.pi
+
+# Scratch / temporary working files (gitignored per AGENTS.md rule 1)
+.scratch/
+
+# PMTiles regional tile extracts — kept locally for dev, hosted on R2 in prod.
+# Re-generate with: pmtiles extract <CDN_URL> <output> --bbox=... --maxzoom=14
+static/pmtiles/
+
+.vscode/*
+.scratch/
+
+# Portfolio report — the repo holds code only, never financial data.
+# docs/dev/portfolio-report-concept.md §2.
+data/
+cache/
+out/

@@ -1,0 +1,30 @@
+base_currency: EUR
+
+benchmark:
+  name: "FTSE All-World (proxy ETF)"
+  isin: IE00BK5BQT80          # verify; or MSCI World IE00B4L5Y983
+  ticker: VWCE.DE             # verify listing before relying on it
+
+# Fill in a ticker per ISIN found in the CSV to enable phase-2 valuation.
+# ISINs without a ticker here render as "n/a — no ticker configured".
+# Verified live against the Yahoo Finance chart API (2026-10-05).
+# Only the 4 ISINs currently held need a ticker for valuation; the rest
+# are fully sold-out historical positions and are kept here for reference.
+instruments:
+  IE000I8KRLL9: {ticker: "SEC0.DE", short: "iShares MSCI Global Semiconductors"}
+  FR001400YYJ0: {ticker: "FINZ.DE", short: "finanzen.net MSCI World"}
+  IE00BF4RFH31: {ticker: "IUSN.DE", short: "iShares MSCI World Small Cap"}
+  IE000N7LUK04: {ticker: "QQCC.DE", short: "Boreas Solactive Quantum Computing"}
+
+goal:
+  monthly_saving: 700
+  years: 10
+  inflation: 0.02
+  withdraw_until_age: 85
+  birth_year: null
+
+reconcile:
+  cash_check: { date: null, balance: null }
+  positions: {}
+
+overrides: []
