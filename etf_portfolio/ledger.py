@@ -8,9 +8,11 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from .classify import Event
+
+CENT = Decimal("0.01")
 
 
 @dataclass
@@ -82,6 +84,36 @@ def qty_at(history: list[tuple[date, str, Decimal]], isin: str, as_of: date) -> 
     return result
 
 
+def holding_periods(qty_history: list[tuple[date, str, Decimal]]) -> dict[str, list[tuple[date, date | None]]]:
+    """Per ISIN, the [first_held, last_held_or_None] spans implied by qty_history.
+
+    A span's end is None while the position is still open (as of the last
+    qty_history entry for that ISIN). Re-buying after fully selling out
+    starts a new span — used for price-fetch windows and implied pricing,
+    where "held" only means non-zero qty, not necessarily a single run.
+    """
+    by_isin: dict[str, list[tuple[date, Decimal]]] = defaultdict(list)
+    for d, isin, qty_after in sorted(qty_history, key=lambda t: t[0]):
+        by_isin[isin].append((d, qty_after))
+
+    out: dict[str, list[tuple[date, date | None]]] = {}
+    for isin, events in by_isin.items():
+        spans: list[tuple[date, date | None]] = []
+        open_start: date | None = None
+        prev_qty = Decimal(0)
+        for d, qty_after in events:
+            if prev_qty == 0 and qty_after != 0:
+                open_start = d
+            elif prev_qty != 0 and qty_after == 0 and open_start is not None:
+                spans.append((open_start, d))
+                open_start = None
+            prev_qty = qty_after
+        if open_start is not None:
+            spans.append((open_start, None))
+        out[isin] = spans
+    return out
+
+
 def build_ledger(events: list[Event]) -> LedgerResult:
     res = LedgerResult()
     cash_running = Decimal(0)
@@ -126,6 +158,11 @@ def build_ledger(events: list[Event]) -> LedgerResult:
                 remaining -= take
                 if lot.qty <= 0:
                     lots.pop(0)
+            # Fractional FIFO splitting on partial sells leaves Decimal
+            # noise (e.g. 59.999999999998) in the consumed cost; quantize at
+            # this realized boundary — a cent is the real-world resolution
+            # of a EUR cost, anything finer is rounding artifact, not signal.
+            consumed_cost = consumed_cost.quantize(CENT, rounding=ROUND_HALF_UP)
             if remaining > 0:
                 res.dq.append(
                     DqIssue(

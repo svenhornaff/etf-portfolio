@@ -44,6 +44,21 @@ def fmt_qty(qty: Decimal | None) -> str:
     return s.replace(".", ",")
 
 
+def fmt_heatcolor(value: float | None) -> str:
+    """Diverging background color for a monthly-return heatmap cell, centred on 0."""
+    if value is None:
+        return "#eef1f7"
+    capped = max(-0.1, min(0.1, value))  # +-10% saturates the scale
+    t = abs(capped) / 0.1
+    if value >= 0:
+        # white -> green
+        r, g, b = round(255 - t * 65), round(255 - t * 25), round(255 - t * 90)
+    else:
+        # white -> red
+        r, g, b = round(255 - t * 25), round(255 - t * 90), round(255 - t * 100)
+    return f"rgb({r},{g},{b})"
+
+
 def _json_default(obj):
     if isinstance(obj, Decimal):
         return float(obj)
@@ -65,6 +80,7 @@ def build_env() -> Environment:
     env.filters["eur"] = fmt_eur
     env.filters["pct"] = fmt_pct
     env.filters["qty"] = fmt_qty
+    env.filters["heatcolor"] = fmt_heatcolor
     return env
 
 

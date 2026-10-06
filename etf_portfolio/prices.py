@@ -12,7 +12,8 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -53,7 +54,7 @@ def get_closes(ticker: str, start: date, end: date, timeout: float = 8.0) -> dic
     for ts, close in zip(timestamps, closes, strict=True):
         if close is None:
             continue
-        d = datetime.utcfromtimestamp(ts).date()
+        d = datetime.fromtimestamp(ts, UTC).date()
         out[d] = Decimal(str(round(close, 6)))
     return out
 
@@ -97,17 +98,23 @@ def fetch_all(
     as_of: date,
     cache_path: Path,
     offline: bool,
+    end_by_isin: dict[str, date] | None = None,
 ) -> tuple[dict[str, dict[date, Decimal]], list[str]]:
     """Return {isin: {date: close}} and a list of warning strings.
 
     Uses the cache when offline or when a fetch fails. Never raises.
+    `end_by_isin` lets callers fetch a shorter window per ISIN (e.g. a
+    sold-out position doesn't need quotes past its sell date); isins
+    absent from it fetch through `as_of` as before.
     """
     cache = load_cache(cache_path)
     closes_by_isin: dict[str, dict[date, Decimal]] = {}
     warnings: list[str] = []
     dirty = False
+    end_by_isin = end_by_isin or {}
 
     for isin, start in start_by_isin.items():
+        end = end_by_isin.get(isin, as_of)
         inst = instruments.get(isin)
         cached = cache_to_decimal(cache, isin)
         if not inst or "ticker" not in inst:
@@ -128,7 +135,7 @@ def fetch_all(
             continue
 
         try:
-            fetched = get_closes(ticker, start, as_of)
+            fetched = get_closes(ticker, start, end)
         except PriceFetchError as e:
             if cached:
                 closes_by_isin[isin] = cached
@@ -156,3 +163,111 @@ def close_on_or_before(closes: dict[date, Decimal], d: date, max_lookback: int =
         if day in closes:
             return closes[day], day
     return None
+
+
+@dataclass
+class PriceSeries:
+    """Resolved daily price for one ISIN, with provenance per day.
+
+    docs/dev/refactor-concept.md §2.3: market close wins when it exists;
+    otherwise an "implied" price derived from the ISIN's own trade amounts
+    fills the gap inside its holding period. Never silently better than
+    the facts: days outside both have no entry at all.
+    """
+
+    closes: dict[date, Decimal] = field(default_factory=dict)
+    source: dict[date, str] = field(default_factory=dict)  # "market" | "implied"
+
+    def close_on_or_before(self, d: date, max_lookback: int = 10) -> tuple[Decimal, date, str] | None:
+        for back in range(max_lookback + 1):
+            day = d - timedelta(days=back)
+            if day in self.closes:
+                return self.closes[day], day, self.source.get(day, "market")
+        return None
+
+    @property
+    def implied_days(self) -> int:
+        return sum(1 for s in self.source.values() if s == "implied")
+
+
+def _implied_price_on(points: list[tuple[date, Decimal]], day: date) -> Decimal | None:
+    """Linear interpolation between trade execution prices, flat after the last.
+
+    `points` must be sorted by date. Returns None before the first trade
+    (there's nothing to imply from yet).
+    """
+    if not points:
+        return None
+    if day <= points[0][0]:
+        return points[0][1] if day == points[0][0] else None
+    if day >= points[-1][0]:
+        return points[-1][1]
+    for (d0, p0), (d1, p1) in zip(points, points[1:], strict=False):
+        if d0 <= day <= d1:
+            if d1 == d0:
+                return p1
+            span = (d1 - d0).days
+            frac = Decimal((day - d0).days) / Decimal(span)
+            return p0 + (p1 - p0) * frac
+    return None
+
+
+def resolve_closes(
+    instruments: dict[str, dict],
+    trade_points_by_isin: dict[str, list[tuple[date, Decimal]]],
+    holding_spans_by_isin: dict[str, list[tuple[date, date | None]]],
+    as_of: date,
+    cache_path: Path,
+    offline: bool,
+) -> tuple[dict[str, PriceSeries], list[str]]:
+    """Resolve a full daily PriceSeries for every ISIN that was ever held.
+
+    Market data (Yahoo, cache-first) is fetched for every ISIN that has a
+    configured ticker, over its own holding window only (§2.4). ISINs
+    without a ticker — or days a ticker's data doesn't cover — fall back to
+    §2.3's implied price from the ISIN's own trade amounts, inside its
+    holding period only. Days with neither are left unpriced; callers must
+    treat that as "missing", never as zero.
+    """
+    start_by_isin: dict[str, date] = {}
+    end_by_isin: dict[str, date] = {}
+    for isin, spans in holding_spans_by_isin.items():
+        if not spans:
+            continue
+        start_by_isin[isin] = min(s for s, _ in spans)
+        last_end = max((e or as_of) for _, e in spans)
+        # a few days of slack past a sell-out so close_on_or_before carry-
+        # forward has something to land on right at the boundary
+        end_by_isin[isin] = min(as_of, last_end + timedelta(days=5))
+
+    market_closes, fetch_warnings = fetch_all(instruments, start_by_isin, as_of, cache_path, offline, end_by_isin=end_by_isin)
+
+    series_by_isin: dict[str, PriceSeries] = {}
+    warnings: list[str] = list(fetch_warnings)
+    for isin, spans in holding_spans_by_isin.items():
+        series = PriceSeries()
+        market = market_closes.get(isin, {})
+        points = sorted(trade_points_by_isin.get(isin, []))
+        has_ticker = bool((instruments.get(isin) or {}).get("ticker"))
+        implied_used = False
+        for span_start, span_end in spans:
+            day = span_start
+            last_day = span_end or as_of
+            while day <= last_day:
+                if day in market:
+                    series.closes[day] = market[day]
+                    series.source[day] = "market"
+                else:
+                    implied = _implied_price_on(points, day)
+                    if implied is not None:
+                        series.closes[day] = implied
+                        series.source[day] = "implied"
+                        implied_used = True
+                day += timedelta(days=1)
+        series_by_isin[isin] = series
+        if implied_used and not has_ticker:
+            warnings.append(f"{isin}: no ticker configured — using implied prices from trade amounts (≈)")
+        elif implied_used:
+            warnings.append(f"{isin}: market data incomplete — gaps filled with implied prices (≈)")
+
+    return series_by_isin, warnings

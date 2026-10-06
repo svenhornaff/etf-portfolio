@@ -5,12 +5,13 @@ docs/dev/portfolio-report-concept.md §6.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import statistics
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 
 from .ledger import LedgerResult
-from .prices import close_on_or_before
+from .prices import PriceSeries, close_on_or_before
 
 
 @dataclass
@@ -70,28 +71,79 @@ def invested_capital_series(
 # --- Phase 2 ---------------------------------------------------------------
 
 
+@dataclass
+class Valuation:
+    """docs/dev/refactor-concept.md §3: the valuation guard.
+
+    `value` is None — not a partial sum — if any currently-held ISIN has
+    no resolved price at all. A held ISIN priced only via an implied
+    series still counts as priced, but shows up in `estimated`.
+    """
+
+    value: Decimal | None
+    priced_value: Decimal  # sum of what *is* priced, for the "missing" warning text
+    missing: list[str] = field(default_factory=list)
+    estimated: list[str] = field(default_factory=list)  # held isins priced via implied series today
+    price_dates: dict[str, date] = field(default_factory=dict)
+    price_sources: dict[str, str] = field(default_factory=dict)  # isin -> "market" | "implied"
+    stale: list[str] = field(default_factory=list)  # price older than as_of - 3 business days
+    reason: str | None = None
+
+
 def portfolio_value(
     positions: dict[str, Decimal],
     cash: Decimal,
-    closes_by_isin: dict[str, dict[date, Decimal]],
+    closes_by_isin: dict[str, dict[date, Decimal]] | dict[str, PriceSeries],
     as_of: date,
-) -> tuple[Decimal, bool, list[str], dict[str, date]]:
-    """value, partial_flag, missing_isins, price_date_by_isin."""
-    value = cash
+    stale_after_days: int = 5,  # ~3 business days, calendar approximation
+) -> Valuation:
+    priced_value = cash
     missing: list[str] = []
+    estimated: list[str] = []
+    stale: list[str] = []
     price_dates: dict[str, date] = {}
+    price_sources: dict[str, str] = {}
     for isin, qty in positions.items():
         if qty == 0:
             continue
-        closes = closes_by_isin.get(isin)
-        hit = close_on_or_before(closes, as_of) if closes else None
+        series = closes_by_isin.get(isin)
+        if isinstance(series, PriceSeries):
+            hit = series.close_on_or_before(as_of)
+        else:
+            plain_hit = close_on_or_before(series, as_of) if series else None
+            hit = (plain_hit[0], plain_hit[1], "market") if plain_hit else None
         if hit is None:
             missing.append(isin)
             continue
-        price, price_date = hit
-        value += qty * price
+        price, price_date, source = hit
+        priced_value += qty * price
         price_dates[isin] = price_date
-    return value, bool(missing), missing, price_dates
+        price_sources[isin] = source
+        if source == "implied":
+            estimated.append(isin)
+        if (as_of - price_date).days > stale_after_days:
+            stale.append(isin)
+    if missing:
+        names = ", ".join(sorted(missing))
+        return Valuation(
+            value=None,
+            priced_value=priced_value,
+            missing=missing,
+            estimated=estimated,
+            price_dates=price_dates,
+            price_sources=price_sources,
+            stale=stale,
+            reason=f"Kurs fehlt: {names}",
+        )
+    return Valuation(
+        value=priced_value,
+        priced_value=priced_value,
+        missing=missing,
+        estimated=estimated,
+        price_dates=price_dates,
+        price_sources=price_sources,
+        stale=stale,
+    )
 
 
 def xirr(flows: list[tuple[date, Decimal]], guess: float = 0.1) -> float | None:
@@ -150,41 +202,70 @@ def xirr(flows: list[tuple[date, Decimal]], guess: float = 0.1) -> float | None:
     return (lo + hi) / 2
 
 
-def coverage_start_date(
-    ledger: LedgerResult,
-    closes_by_isin: dict[str, dict[date, Decimal]],
+@dataclass
+class Coverage:
+    """docs/dev/refactor-concept.md §2.5: replaces the old coverage_start_date.
+
+    `start` is the first day every then-held ISIN has *some* resolved
+    price (market or implied). `implied_share` is the fraction of
+    held-isin-days in [start, end] priced only via the implied series —
+    shown in the report as "≈ geschätzt (x % implizite Kurse)".
+    """
+
+    start: date
+    implied_share: float
+    unpriced_isins: list[str] = field(default_factory=list)
+
+    @property
+    def estimated(self) -> bool:
+        return self.implied_share > 0.0
+
+
+def compute_coverage(
+    qty_history: list[tuple[date, str, Decimal]],
+    series_by_isin: dict[str, PriceSeries],
     global_start: date,
     end: date,
-) -> date:
-    """First day from which every *then-held* ISIN has a usable price.
+) -> Coverage:
+    qty_events = sorted(qty_history, key=lambda t: t[0])
 
-    Historical, now-fully-sold-out positions (e.g. an ETF bought and sold
-    in 2024, with no ticker configured) would otherwise silently drop out
-    of the valuation on their buy day and reappear on their sell day,
-    producing bogus swings. Rather than require a ticker for every ISIN
-    ever traded, TWR/drawdown are computed only from the day after the
-    last day any held-but-unpriced ISIN existed — documented in the
-    report as "missing is not zero", not silently approximated.
-    """
-    qty_by_isin: dict[str, Decimal] = {}
-    qty_events = sorted(ledger.qty_history, key=lambda t: t[0])
-    qi = 0
+    def walk_held(from_day: date, to_day: date):
+        qty_by_isin: dict[str, Decimal] = {}
+        qi = 0
+        day = from_day
+        while day <= to_day:
+            while qi < len(qty_events) and qty_events[qi][0] <= day:
+                _, isin, qty_after = qty_events[qi]
+                qty_by_isin[isin] = qty_after
+                qi += 1
+            yield day, {isin: q for isin, q in qty_by_isin.items() if q != 0}
+            day += timedelta(days=1)
+
     last_uncovered: date | None = None
-    day = global_start
-    while day <= end:
-        while qi < len(qty_events) and qty_events[qi][0] <= day:
-            _, isin, qty_after = qty_events[qi]
-            qty_by_isin[isin] = qty_after
-            qi += 1
-        for isin, qty in qty_by_isin.items():
-            if qty == 0:
-                continue
-            closes = closes_by_isin.get(isin)
-            if not (closes and close_on_or_before(closes, day)):
+    unpriced: set[str] = set()
+    for day, held in walk_held(global_start, end):
+        for isin in held:
+            series = series_by_isin.get(isin)
+            if not (series and series.close_on_or_before(day)):
                 last_uncovered = day
-                break
-        day += timedelta(days=1)
-    return (last_uncovered + timedelta(days=1)) if last_uncovered else global_start
+                unpriced.add(isin)
+    start = (last_uncovered + timedelta(days=1)) if last_uncovered else global_start
+
+    total_isin_days = 0
+    implied_isin_days = 0
+    if start <= end:
+        for day, held in walk_held(start, end):
+            for isin in held:
+                series = series_by_isin.get(isin)
+                hit = series.close_on_or_before(day) if series else None
+                if hit is None:
+                    continue  # already reported via unpriced above
+                total_isin_days += 1
+                if hit[2] == "implied":
+                    implied_isin_days += 1
+    implied_share = (implied_isin_days / total_isin_days) if total_isin_days else 0.0
+
+    return Coverage(start=start, implied_share=implied_share, unpriced_isins=sorted(unpriced))
 
 
 def daily_value_series(
@@ -225,10 +306,15 @@ def daily_value_series(
         for isin, qty in qty_by_isin.items():
             if qty == 0:
                 continue
-            closes = closes_by_isin.get(isin)
-            hit = close_on_or_before(closes, day) if closes else None
-            if hit:
-                value += qty * hit[0]
+            series = closes_by_isin.get(isin)
+            if isinstance(series, PriceSeries):
+                hit = series.close_on_or_before(day)
+                price = hit[0] if hit else None
+            else:
+                hit = close_on_or_before(series, day) if series else None
+                price = hit[0] if hit else None
+            if price is not None:
+                value += qty * price
         out.append((day, value, flow_by_day.get(day, Decimal(0))))
         day += timedelta(days=1)
     return out
@@ -289,3 +375,125 @@ def benchmark_wealth_series(
         out.append((day, value))
         day += timedelta(days=1)
     return out
+
+
+# --- Phase 3: concept §4 KPI set -------------------------------------------
+
+
+def daily_returns(index_series: list[tuple[date, float]]) -> list[float]:
+    """Simple day-over-day returns on the TWR index, for volatility."""
+    out = []
+    for (_, a), (_, b) in zip(index_series, index_series[1:], strict=False):
+        if a:
+            out.append(b / a - 1.0)
+    return out
+
+
+def volatility_annualized(index_series: list[tuple[date, float]], min_obs: int = 120) -> float | None:
+    """Annualized stdev of daily TWR returns × √252. None below `min_obs`."""
+    rets = daily_returns(index_series)
+    if len(rets) < min_obs:
+        return None
+    return statistics.pstdev(rets) * (252 ** 0.5)
+
+
+def twr_annualized(twr_total: float, days: int) -> float | None:
+    """TWR p.a., only meaningful once the coverage period is ≥ 1 year."""
+    if days < 365:
+        return None
+    return (1.0 + twr_total) ** (365.0 / days) - 1.0
+
+
+def twr_index_on(index_series: list[tuple[date, float]], d: date) -> float | None:
+    """Last index value at or before d, or None if d is before coverage starts."""
+    hit = None
+    for day, v in index_series:
+        if day > d:
+            break
+        hit = v
+    return hit
+
+
+def twr_ytd(index_series: list[tuple[date, float]], as_of: date) -> float | None:
+    """Return since the last calendar year-end (or coverage start if later)."""
+    if not index_series:
+        return None
+    year_end = date(as_of.year - 1, 12, 31)
+    base = twr_index_on(index_series, year_end)
+    if base is None:
+        base = index_series[0][1]  # coverage starts mid-year: YTD = since coverage start
+    latest = index_series[-1][1]
+    if base == 0:
+        return None
+    return latest / base - 1.0
+
+
+def current_drawdown(index_series: list[tuple[date, float]]) -> float | None:
+    """Latest index value vs. its running peak — how far below the high-water mark now."""
+    if not index_series:
+        return None
+    peak = index_series[0][1]
+    for _, v in index_series:
+        peak = max(peak, v)
+    latest = index_series[-1][1]
+    if peak == 0:
+        return None
+    return latest / peak - 1.0
+
+
+def monthly_returns(index_series: list[tuple[date, float]]) -> list[dict]:
+    """Calendar-month returns on the TWR index: [{month, ret, partial}].
+
+    `partial` marks the first month if coverage doesn't start on the 1st
+    (and the last, if it doesn't run through month-end) — the return is
+    real but not comparable to a full month.
+    """
+    if not index_series:
+        return []
+    by_month: dict[str, list[tuple[date, float]]] = {}
+    for d, v in index_series:
+        by_month.setdefault(d.strftime("%Y-%m"), []).append((d, v))
+    months = sorted(by_month)
+    out = []
+    prev_last_value = index_series[0][1]
+    for i, m in enumerate(months):
+        points = by_month[m]
+        last_value = points[-1][1]
+        first_day_of_month = date(points[0][0].year, points[0][0].month, 1)
+        partial = (i == 0 and points[0][0] != first_day_of_month) or i == len(months) - 1 and points[-1][0].day < 28
+        ret = (last_value / prev_last_value - 1.0) if prev_last_value else 0.0
+        out.append({"month": m, "ret": ret, "partial": partial})
+        prev_last_value = last_value
+    return out
+
+
+def best_worst_month(months: list[dict]) -> tuple[dict | None, dict | None]:
+    complete = [m for m in months if not m["partial"]]
+    pool = complete or months
+    if not pool:
+        return None, None
+    return max(pool, key=lambda m: m["ret"]), min(pool, key=lambda m: m["ret"])
+
+
+def largest_position(weights: dict[str, float]) -> tuple[str, float] | None:
+    if not weights:
+        return None
+    isin = max(weights, key=lambda k: weights[k])
+    return isin, weights[isin]
+
+
+def top_n_share(weights: dict[str, float], n: int = 3) -> float:
+    return sum(sorted(weights.values(), reverse=True)[:n])
+
+
+def turnover_12m(sells: list, as_of: date, avg_value: Decimal | None) -> float | None:
+    """Σ sell proceeds in the trailing 12 months ÷ average portfolio value.
+
+    None if there's no current value to divide by — a ratio against an
+    unknown denominator isn't a number, it's a guess.
+    """
+    if not avg_value:
+        return None
+    cutoff = as_of - timedelta(days=365)
+    proceeds = sum((s.proceeds for s in sells if s.date > cutoff), Decimal(0))
+    return float(proceeds / avg_value)

@@ -1,10 +1,12 @@
 """CLI entry point: ZERO CSV -> one self-contained HTML report.
 
-docs/dev/portfolio-report-concept.md §9.
+docs/dev/portfolio-report-concept.md §9, docs/dev/refactor-concept.md.
 
-    uv run etf-portfolio              # latest CSV in data/ -> out/report-YYYY-MM-DD.html
-    uv run etf-portfolio --open       # same, then open in browser
-    uv run python -m etf_portfolio    # equivalent, if you prefer module form
+    uv run etf-portfolio                    # latest CSV -> out/report-<valuation_date>.html
+    uv run etf-portfolio --as-of 2026-01-01 # value as of a specific date (must be >= booking_as_of)
+    uv run etf-portfolio --list-instruments # every ISIN ever traded + ticker/coverage status
+    uv run etf-portfolio --open             # build, then open in the default browser
+    uv run python -m etf_portfolio          # equivalent, if you prefer module form
 """
 
 from __future__ import annotations
@@ -20,19 +22,21 @@ import yaml
 
 from etf_portfolio import kpi
 from etf_portfolio.classify import apply_overrides, classify, redact
-from etf_portfolio.ledger import build_ledger
+from etf_portfolio.ledger import build_ledger, holding_periods
 from etf_portfolio.load import (
     HeaderMismatchError,
     find_latest_csv,
     load_rows,
     summarize,
 )
-from etf_portfolio.prices import fetch_all
+from etf_portfolio.prices import load_cache, resolve_closes
 from etf_portfolio.render import render_report
 
 # etf_portfolio/report.py -> package dir's parent is the repo root, where
 # data/, cache/, out/ and config.yaml live.
 ROOT = Path(__file__).resolve().parent.parent
+
+BENCHMARK_KEY = "__benchmark__"
 
 
 def load_config(path: Path) -> dict:
@@ -41,8 +45,29 @@ def load_config(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
-def build_ctx(rows, events, ledger, cfg, price_data, as_of: date, source_file: Path) -> dict:
-    closes_by_isin, price_warnings = price_data
+def trade_points_by_isin(events) -> dict[str, list[tuple[date, Decimal]]]:
+    """§2.3 implied-price inputs: execution price (|amount| / qty) per trade."""
+    out: dict[str, list[tuple[date, Decimal]]] = {}
+    for ev in events:
+        if ev.kind not in ("BUY", "SELL") or not ev.isin or not ev.qty:
+            continue
+        price = abs(ev.row.amount) / ev.qty
+        out.setdefault(ev.isin, []).append((ev.row.booking, price))
+    return out
+
+
+def build_ctx(
+    rows,
+    events,
+    ledger,
+    cfg,
+    price_data,
+    booking_as_of: date,
+    valuation_date: date,
+    source_file: Path,
+) -> dict:
+    series_by_isin, price_warnings = price_data  # dict[isin, PriceSeries]
+    have_prices = bool(series_by_isin)
 
     net_contrib = kpi.net_contributions(ledger)
     invested = kpi.invested_cost_basis(ledger)
@@ -51,55 +76,86 @@ def build_ctx(rows, events, ledger, cfg, price_data, as_of: date, source_file: P
     dividends = kpi.dividends_total(ledger)
 
     positions = {isin: pos.qty for isin, pos in ledger.positions_now.items()}
-    value, partial, missing, price_dates = kpi.portfolio_value(positions, ledger.cash, closes_by_isin, as_of)
-    have_any_prices = bool(closes_by_isin) and any(closes_by_isin.values())
-
-    value_kpi = None if not have_any_prices else value
+    valuation = kpi.portfolio_value(positions, ledger.cash, series_by_isin, valuation_date)
+    value_kpi = valuation.value
     gain_eur = None if value_kpi is None else value_kpi - net_contrib
 
-    global_start = min((d for d, _ in ledger.flows), default=as_of)
-
+    global_start = min((d for d, _ in ledger.flows), default=valuation_date)
     invested_series = [
-        (d.isoformat(), float(v)) for d, v in kpi.invested_capital_series(ledger.flows, global_start, as_of)
+        (d.isoformat(), float(v))
+        for d, v in kpi.invested_capital_series(ledger.flows, global_start, valuation_date)
     ]
 
+    coverage = kpi.compute_coverage(ledger.qty_history, series_by_isin, global_start, valuation_date) if have_prices else None
+
     benchmark_cfg = cfg.get("benchmark", {}) or {}
-    benchmark_series: list[tuple[str, float]] | None = None
-    bench_closes = closes_by_isin.get("__benchmark__")
-    if benchmark_cfg.get("ticker") and ledger.flows and bench_closes:
-        benchmark_series = [
-            (d.isoformat(), float(v))
-            for d, v in kpi.benchmark_wealth_series(ledger.flows, bench_closes, global_start, as_of)
-        ]
+    bench_series_obj = series_by_isin.get(BENCHMARK_KEY)
+    bench_closes = bench_series_obj.closes if bench_series_obj else None
 
     xirr_value = None
     twr_value = None
+    twr_pa_value = None
+    twr_ytd_value = None
     mdd_value = None
-    twr_start = None
+    akt_dd_value = None
+    vol_value = None
+    months: list[dict] = []
+    best_month = worst_month = None
+    benchmark_twr_value = None
     value_series: list[tuple[str, float]] | None = None
-    if have_any_prices and ledger.flows:
+    benchmark_series: list[tuple[str, float]] | None = None
+
+    if value_kpi is not None and ledger.flows:
         # XIRR convention: cash the investor pays in is negative to them;
-        # the ledger stores deposits as positive (cash arriving in the
-        # account), so flip the sign here. Terminal value is positive.
-        xflows = [(d, -a) for d, a in ledger.flows] + [(as_of, value)]
+        # the ledger stores deposits as positive, so flip the sign here.
+        xflows = [(d, -a) for d, a in ledger.flows] + [(valuation_date, value_kpi)]
         xirr_value = kpi.xirr(xflows)
 
-        twr_start = kpi.coverage_start_date(ledger, closes_by_isin, global_start, as_of)
-        series = kpi.daily_value_series(ledger, closes_by_isin, twr_start, as_of)
+    if coverage and ledger.flows and coverage.start <= valuation_date:
+        series = kpi.daily_value_series(ledger, series_by_isin, coverage.start, valuation_date)
         twr_idx = kpi.twr_series(series)
         if twr_idx:
             twr_value = twr_idx[-1][1] - 1.0
             mdd_value = kpi.max_drawdown(twr_idx)
+            akt_dd_value = kpi.current_drawdown(twr_idx)
+            vol_value = kpi.volatility_annualized(twr_idx)
+            days = (valuation_date - coverage.start).days
+            twr_pa_value = kpi.twr_annualized(twr_value, days)
+            twr_ytd_value = kpi.twr_ytd(twr_idx, valuation_date)
+            months = kpi.monthly_returns(twr_idx)
+            best_month, worst_month = kpi.best_worst_month(months)
         value_series = [(d.isoformat(), float(v)) for d, v, _flow in series]
 
+        if bench_closes:
+            from etf_portfolio.prices import close_on_or_before
+
+            p0 = close_on_or_before(bench_closes, coverage.start)
+            p1 = close_on_or_before(bench_closes, valuation_date)
+            if p0 and p1 and p0[0] > 0:
+                benchmark_twr_value = float(p1[0] / p0[0]) - 1.0
+
+            # Rebase the benchmark-wealth line to start at the portfolio's
+            # own value on coverage.start, so the two lines are comparable
+            # from the same starting point (§5); flows already "inside"
+            # that seed are excluded to avoid double-counting them.
+            seed_value = series[0][1]
+            seeded_flows = [(coverage.start, seed_value)] + [
+                (d, a) for d, a in ledger.flows if d > coverage.start
+            ]
+            benchmark_series = [
+                (d.isoformat(), float(v))
+                for d, v in kpi.benchmark_wealth_series(seeded_flows, bench_closes, coverage.start, valuation_date)
+            ]
+
     holdings = []
+    instruments_cfg = cfg.get("instruments", {}) or {}
     for isin, pos in sorted(ledger.positions_now.items(), key=lambda kv: kv[1].name or kv[0]):
         if pos.qty == 0:
             continue
-        price_date = price_dates.get(isin)
-        price = None
-        if price_date and closes_by_isin.get(isin):
-            price = closes_by_isin[isin].get(price_date)
+        price_date = valuation.price_dates.get(isin)
+        source = valuation.price_sources.get(isin)
+        series_obj = series_by_isin.get(isin)
+        price = series_obj.closes.get(price_date) if series_obj and price_date else None
         mv = pos.qty * price if price is not None else None
         unrealized = (mv - pos.cost_basis) if mv is not None else None
         holdings.append(
@@ -110,6 +166,7 @@ def build_ctx(rows, events, ledger, cfg, price_data, as_of: date, source_file: P
                 "avg_cost": pos.avg_cost,
                 "price": price,
                 "price_date": price_date,
+                "estimated": source == "implied",
                 "value": mv,
                 "weight": None,  # filled below once total value is known
                 "unrealized": unrealized,
@@ -120,6 +177,12 @@ def build_ctx(rows, events, ledger, cfg, price_data, as_of: date, source_file: P
     for h in holdings:
         if h["value"] is not None and known_value:
             h["weight"] = float(h["value"] / known_value)
+
+    weights = {h["isin"]: h["weight"] for h in holdings if h["weight"] is not None}
+    largest = kpi.largest_position(weights)
+    top3 = kpi.top_n_share(weights, 3) if weights else None
+    ever_traded = len({isin for _, isin, _ in ledger.qty_history})
+    turnover = kpi.turnover_12m(ledger.sells, valuation_date, value_kpi or valuation.priced_value or None)
 
     savings_by_month: dict[str, Decimal] = {}
     for d, amt in ledger.flows:
@@ -141,6 +204,33 @@ def build_ctx(rows, events, ledger, cfg, price_data, as_of: date, source_file: P
 
     income_by_month = {m: dict(v) for m, v in sorted(ledger.income.items())}
 
+    # §8: price coverage per ISIN, for the data-quality section.
+    price_coverage = []
+    for isin, series in sorted(series_by_isin.items()):
+        if isin == BENCHMARK_KEY:
+            continue
+        market_days = sum(1 for s in series.source.values() if s == "market")
+        implied_days = series.implied_days
+        if not series.closes:
+            status = "keine Kursdaten"
+        elif implied_days == 0:
+            status = "vollständig (Markt)"
+        elif market_days == 0:
+            status = "implizit (aus Kaufpreisen)"
+        else:
+            status = "gemischt (Markt + implizit)"
+        price_coverage.append(
+            {
+                "isin": isin,
+                "name": instruments_cfg.get(isin, {}).get("short") or ledger.names.get(isin, isin),
+                "status": status,
+                "from": min(series.closes) if series.closes else None,
+                "to": max(series.closes) if series.closes else None,
+                "market_days": market_days,
+                "implied_days": implied_days,
+            }
+        )
+
     dq_items = []
     for issue in ledger.dq:
         dq_items.append({"severity": issue.severity, "message": issue.message})
@@ -154,19 +244,21 @@ def build_ctx(rows, events, ledger, cfg, price_data, as_of: date, source_file: P
             )
     for w in price_warnings:
         dq_items.append({"severity": "info", "message": w})
+    if valuation.stale:
+        dq_items.append({"severity": "warning", "message": f"Kurs älter als {5} Tage: {', '.join(valuation.stale)}"})
 
     vap_checks = [
         {**v, "name": v["name"] or v["isin"]}
         for v in sorted(ledger.vap_checks, key=lambda x: x["date"])
     ]
 
-    trade_buckets = build_trade_buckets(events, as_of)
+    trade_buckets = build_trade_buckets(events, booking_as_of)
 
     asset_class_weights: dict[str, float] = {}
     for h in holdings:
         if h["weight"] is None:
             continue
-        cls = "Krypto" if h["isin"].startswith("XC") else "ETF"
+        cls = (instruments_cfg.get(h["isin"], {}) or {}).get("class") or "Nicht zugeordnet"
         asset_class_weights[cls] = asset_class_weights.get(cls, 0.0) + h["weight"]
 
     perf_on_deposit = float(gain_eur / net_contrib) if gain_eur is not None and net_contrib else None
@@ -182,10 +274,16 @@ def build_ctx(rows, events, ledger, cfg, price_data, as_of: date, source_file: P
         },
         "holdings_weights": {h["isin"]: h["weight"] for h in holdings if h["weight"] is not None},
         "holdings_names": {
-            h["isin"]: ((cfg.get("instruments", {}) or {}).get(h["isin"], {}) or {}).get("short") or h["name"]
+            h["isin"]: (instruments_cfg.get(h["isin"], {}) or {}).get("short") or h["name"]
             for h in holdings
         },
         "asset_class_weights": asset_class_weights,
+        "monthly_returns": months,
+        "realized_by_isin_named": {
+            (instruments_cfg.get(isin, {}) or {}).get("short") or ledger.names.get(isin) or isin: float(amt)
+            for isin, amt in ledger.realized.items()
+            if amt != 0
+        },
         "wealth": {
             "invested": invested_series,
             "benchmark": benchmark_series,
@@ -195,7 +293,8 @@ def build_ctx(rows, events, ledger, cfg, price_data, as_of: date, source_file: P
     }
 
     return {
-        "as_of": as_of,
+        "booking_as_of": booking_as_of,
+        "valuation_date": valuation_date,
         "booking_date_range": summarize(rows),
         "source_file": source_file.name,
         "parser_version": "1.0",
@@ -206,16 +305,35 @@ def build_ctx(rows, events, ledger, cfg, price_data, as_of: date, source_file: P
             "taxes": taxes,
             "dividends": dividends,
             "value": value_kpi,
-            "value_partial": partial,
+            "value_reason": valuation.reason,
+            "value_estimated": bool(valuation.estimated),
             "gain_eur": gain_eur,
             "xirr": xirr_value,
             "twr": twr_value,
-            "twr_start": twr_start,
+            "twr_pa": twr_pa_value,
+            "twr_ytd": twr_ytd_value,
+            "twr_start": coverage.start if coverage else None,
+            "coverage_estimated": coverage.estimated if coverage else False,
+            "coverage_implied_share": coverage.implied_share if coverage else 0.0,
+            "coverage_unpriced": coverage.unpriced_isins if coverage else [],
             "max_drawdown": mdd_value,
+            "current_drawdown": akt_dd_value,
+            "volatility": vol_value,
+            "benchmark_twr": benchmark_twr_value,
+            "largest_position": largest,
+            "top3_share": top3,
+            "instruments_held": len(ledger.positions_now),
+            "instruments_ever": ever_traded,
+            "turnover_12m": turnover,
+            "best_month": best_month,
+            "worst_month": worst_month,
         },
         "holdings": holdings,
         "sells": sorted(ledger.sells, key=lambda s: s.date, reverse=True),
         "realized_by_isin": {isin: amt for isin, amt in ledger.realized.items() if amt != 0},
+        "price_coverage": price_coverage,
+        "monthly_returns": months,
+        "realized_by_isin_named": chart_data["realized_by_isin_named"],
         "dq_items": dq_items,
         "vap_checks": vap_checks,
         "data_json": "",  # filled by render() with escaped JSON
@@ -261,9 +379,37 @@ def build_trade_buckets(events, as_of: date) -> list[dict]:
     return out
 
 
+def list_instruments(ledger, events, cfg: dict, cache_path: Path, as_of: date) -> None:
+    """`--list-instruments`: every ISIN ever traded, config/coverage at a glance."""
+    instruments_cfg = cfg.get("instruments", {}) or {}
+    spans = holding_periods(ledger.qty_history)
+    cache = load_cache(cache_path)
+    isins = sorted({isin for _, isin, _ in ledger.qty_history})
+
+    print(f"{'ISIN':<14} {'name':<36} {'first':<11} {'last':<11} {'qty now':>10}  {'ticker':<10} {'cached':<23} flag")
+    for isin in isins:
+        name = ledger.names.get(isin, "")[:36]
+        isin_spans = spans.get(isin, [])
+        first = min((s for s, _ in isin_spans), default=None)
+        last_open = any(e is None for _, e in isin_spans)
+        last = None if last_open else max((e for _, e in isin_spans if e is not None), default=None)
+        qty_now = ledger.positions_now[isin].qty if isin in ledger.positions_now else Decimal(0)
+        ticker = (instruments_cfg.get(isin, {}) or {}).get("ticker") or ""
+        cached = cache.get(isin, {})
+        cached_range = f"{min(cached)}..{max(cached)}" if cached else ""
+        flag = "" if ticker or cached else "MISSING"
+        print(
+            f"{isin:<14} {name:<36} {first.isoformat() if first else '':<11} "
+            f"{'offen' if last_open else (last.isoformat() if last else ''):<11} {qty_now:>10} "
+            f"{ticker:<10} {cached_range:<23} {flag}"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build a self-contained portfolio HTML report.")
     parser.add_argument("--file", type=Path, help="CSV file to use instead of auto-selecting the latest")
+    parser.add_argument("--as-of", type=str, help="valuation date YYYY-MM-DD (default: today; must be >= last booking date)")
+    parser.add_argument("--list-instruments", action="store_true", help="list every ISIN ever traded with ticker/coverage status and exit")
     parser.add_argument("--offline", action="store_true", help="never hit the network; cache only")
     parser.add_argument("--no-prices", action="store_true", help="skip phase-2 valuation entirely")
     parser.add_argument("--open", action="store_true", help="open the report in the default browser")
@@ -301,31 +447,49 @@ def main(argv: list[str] | None = None) -> int:
     ledger = build_ledger(events)
     print(f"cash (reconstructed): {ledger.cash}")
 
-    as_of = max((r.booking for r in rows), default=date.today())
+    booking_as_of = max((r.booking for r in rows), default=date.today())
+
+    if args.as_of:
+        try:
+            valuation_date = date.fromisoformat(args.as_of)
+        except ValueError:
+            print(f"error: --as-of must be YYYY-MM-DD, got {args.as_of!r}", file=sys.stderr)
+            return 1
+    else:
+        valuation_date = date.today()
+
+    if valuation_date < booking_as_of:
+        print(
+            f"error: --as-of {valuation_date.isoformat()} is before the last booking date "
+            f"{booking_as_of.isoformat()} — valuing a ledger before it's complete isn't supported "
+            "(would need a truncated-ledger replay, not just an earlier price lookup)",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.list_instruments:
+        list_instruments(ledger, events, cfg, cache_path, valuation_date)
+        return 0
 
     price_data: tuple[dict, list[str]] = ({}, [])
     if not args.no_prices:
-        instruments = cfg.get("instruments", {}) or {}
-        active_isins = {isin for isin, pos in ledger.positions_now.items() if pos.qty != 0}
-        start_by_isin = {}
-        for isin in active_isins:
-            lots_dates = [lot.date for lot in ledger.lots.get(isin, [])]
-            start_by_isin[isin] = min(lots_dates) if lots_dates else as_of - timedelta(days=365)
+        instruments = dict(cfg.get("instruments", {}) or {})
+        spans = holding_periods(ledger.qty_history)
+        points = trade_points_by_isin(events)
 
-        benchmark_cfg = cfg.get("benchmark", {})
+        benchmark_cfg = cfg.get("benchmark", {}) or {}
         if benchmark_cfg.get("ticker") and ledger.flows:
-            instruments = dict(instruments)
-            instruments["__benchmark__"] = {"ticker": benchmark_cfg["ticker"]}
-            start_by_isin["__benchmark__"] = min(d for d, _ in ledger.flows)
+            instruments[BENCHMARK_KEY] = {"ticker": benchmark_cfg["ticker"]}
+            spans[BENCHMARK_KEY] = [(min(d for d, _ in ledger.flows), None)]
 
-        closes_by_isin, warnings = fetch_all(instruments, start_by_isin, as_of, cache_path, args.offline)
-        price_data = (closes_by_isin, warnings)
+        series_by_isin, warnings = resolve_closes(instruments, points, spans, valuation_date, cache_path, args.offline)
+        price_data = (series_by_isin, warnings)
         for w in warnings:
             print(f"price warning: {w}")
 
-    ctx = build_ctx(rows, events, ledger, cfg, price_data, as_of, csv_path)
+    ctx = build_ctx(rows, events, ledger, cfg, price_data, booking_as_of, valuation_date, csv_path)
 
-    out_path = out_dir / f"report-{as_of.isoformat()}.html"
+    out_path = out_dir / f"report-{valuation_date.isoformat()}.html"
     render_report(ctx, out_path)
     print(f"report: {out_path}")
 

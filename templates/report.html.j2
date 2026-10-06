@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Portfolio report — {{ as_of.isoformat() }}</title>
+<title>Portfolio-Bericht — {{ valuation_date.isoformat() }}</title>
 <style>
 :root {
   --bg: #eef1f7; --fg: #1a1f36; --card: #ffffff; --muted: #70778c;
@@ -112,6 +112,21 @@ svg.chart .bar.neg { fill: var(--neg); }
 .goal-sim label { display: block; font-size: .8rem; color: var(--muted); margin-top: .6rem; }
 .goal-sim input[type=range] { width: 100%; accent-color: var(--accent); }
 .goal-sim .out .value { font-size: 1.1rem; }
+.preset-btns { display: flex; gap: .5rem; margin-top: .4rem; }
+.preset-btns button { background: var(--accent-soft); color: var(--accent); border: none; border-radius: 8px; padding: .3rem .7rem; font-size: .8rem; font-weight: 600; cursor: pointer; }
+.preset-btns button.active { background: var(--accent); color: #fff; }
+.heatmap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 4px; }
+.heatmap-cell { border-radius: 6px; padding: .4rem .3rem; font-size: .72rem; text-align: center; color: #1a1f36; }
+.heatmap-cell.partial { outline: 1px dashed var(--muted); outline-offset: -1px; }
+.heatmap-cell .hm-month { display: block; opacity: .65; font-size: .65rem; }
+.heatmap-cell .hm-ret { display: block; font-weight: 700; }
+.bar-list .item { display: grid; grid-template-columns: 9rem 1fr 5.5rem; align-items: center; gap: .6rem; padding: .3rem 0; font-size: .82rem; }
+.bar-list .item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-list .item .bar-track { background: var(--border); border-radius: 4px; height: 8px; position: relative; overflow: hidden; }
+.bar-list .item .bar-fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+.bar-list .item .bar-fill.pos { background: var(--pos); left: 50%; }
+.bar-list .item .bar-fill.neg { background: var(--neg); right: 50%; }
+.bar-list .item .v { text-align: right; font-weight: 600; }
 .note { color: var(--muted); font-size: .78rem; }
 footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2rem 0; }
 @media (max-width: 640px) { .goal-sim { grid-template-columns: 1fr; } }
@@ -120,8 +135,8 @@ footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2r
 <body>
 <header>
   <h1>Portfolio Cockpit</h1>
-  <span class="meta">as of {{ as_of.isoformat() }} · source: {{ source_file }} · parser v{{ parser_version }}</span>
-  <button class="toggle" id="hide-toggle" type="button">Hide amounts</button>
+  <span class="meta">Daten bis {{ booking_as_of.isoformat() }} · bewertet zum {{ valuation_date.isoformat() }} · Quelle {{ source_file }} · Parser v{{ parser_version }}</span>
+  <button class="toggle" id="hide-toggle" type="button">Beträge verbergen</button>
 </header>
 <main>
 
@@ -131,7 +146,8 @@ footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2r
       <div class="hero-head">
         <div>
           <div class="hero-label">Depot + Cash</div>
-          <div class="hero-value amt">{% if kpis.value is not none %}{{ kpis.value | eur }}{% if kpis.value_partial %} *{% endif %}{% else %}{{ kpis.net_contributions | eur }} <span class="note">(eingezahlt, keine Kurse geladen)</span>{% endif %}</div>
+          <div class="hero-value amt">{% if kpis.value is not none %}{{ kpis.value | eur }}{% if kpis.value_estimated %} <span class="note" title="Mind. eine Position ist nur über einen aus Kaufpreisen abgeleiteten Kurs bewertet">≈</span>{% endif %}{% else %}n/a <span class="note">({{ kpis.value_reason }})</span>{% endif %}</div>
+          {% if kpis.gain_eur is not none %}<div class="note">Gewinn € seit Start: <strong class="amt {{ 'pos' if kpis.gain_eur > 0 else 'neg' if kpis.gain_eur < 0 else '' }}">{{ kpis.gain_eur | eur(true) }}</strong> · XIRR seit Start: <strong class="{{ 'pos' if kpis.xirr and kpis.xirr > 0 else 'neg' if kpis.xirr and kpis.xirr < 0 else '' }}">{{ kpis.xirr | pct if kpis.xirr is not none else "n/a" }}</strong></div>{% endif %}
         </div>
         <div class="range-tabs" id="range-tabs">
           <button data-range="90">3M</button>
@@ -144,7 +160,7 @@ footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2r
         <div class="chart-tooltip" id="chart-tooltip"></div>
       </div>
       <div class="legend" id="wealth-legend"></div>
-      {% if kpis.twr_start %}<div class="note" style="margin-top:.4rem">Depotwert-Linie seit {{ kpis.twr_start.isoformat() }} — davor fehlt der Kurs für mittlerweile verkaufte Positionen ohne konfigurierten Ticker.</div>{% endif %}
+      {% if kpis.twr_start %}<div class="note" style="margin-top:.4rem">Depotwert-Linie seit {{ kpis.twr_start.isoformat() }}{% if kpis.coverage_estimated %} · ≈ geschätzt ({{ (kpis.coverage_implied_share * 100) | round(0) | int }} % implizite Kurse aus Kaufpreisen){% endif %}{% if kpis.coverage_unpriced %} · ohne Kurs: {{ kpis.coverage_unpriced | join(', ') }}{% endif %}</div>{% endif %}
     </div>
 
     <div class="card stat-list">
@@ -154,7 +170,7 @@ footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2r
       <div class="row"><span class="k">Gesamt (Depot + Cash)</span><strong class="amt">{{ kpis.value | eur if kpis.value is not none else "n/a" }}</strong></div>
       <div class="row"><span class="k">Einzahlungen</span><strong class="amt">{{ kpis.net_contributions | eur }}</strong></div>
       <div class="row"><span class="k">Auszahlungen</span><strong class="amt">{{ withdrawals_sum | eur }}</strong></div>
-      <div class="row"><span class="k" title="Eigene Kennzahl: Gain € ÷ Einzahlungen — keine Brokerberechnung">Performance auf Einlage</span>
+      <div class="row"><span class="k" title="Eigene Kennzahl: Gain € ÷ Einzahlungen — keine Brokerberechnung, keine Zeitgewichtung">Gewinn ÷ Einzahlungen</span>
         <strong class="{{ 'pos' if perf_on_deposit and perf_on_deposit > 0 else 'neg' if perf_on_deposit and perf_on_deposit < 0 else '' }}">{{ perf_on_deposit | pct if perf_on_deposit is not none else "n/a" }}</strong></div>
     </div>
   </div>
@@ -171,7 +187,7 @@ footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2r
 
     <div class="card">
       <div class="hero-head" style="margin-bottom:.9rem">
-        <h3 style="margin:0">Allocation</h3>
+        <h3 style="margin:0">Allokation</h3>
         <div class="mini-tabs" id="donut-tabs">
           <button data-tab="top" class="active">Top Positionen</button>
           <button data-tab="class">Assetklasse</button>
@@ -197,32 +213,68 @@ footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2r
 </section>
 
 <section>
-  <h2 class="section-title">Weitere Kennzahlen</h2>
+  <h2 class="section-title">Weitere Kennzahlen <span class="note">— {{ kpis.twr_start.isoformat() if kpis.twr_start else "keine Kursabdeckung" }} bis {{ valuation_date.isoformat() }}{% if kpis.coverage_estimated %}, ≈ geschätzt{% endif %}</span></h2>
   <div class="cards">
-    <div class="card"><div class="label">XIRR</div>
-      <div class="value {{ 'pos' if kpis.xirr and kpis.xirr > 0 else 'neg' if kpis.xirr and kpis.xirr < 0 else '' }}">{{ kpis.xirr | pct if kpis.xirr is not none else "n/a" }}</div>
-      {% if kpis.xirr is none %}<div class="reason">prices not loaded, or no sign change</div>{% endif %}
+    <div class="card"><div class="label">TWR gesamt</div>
+      <div class="value {{ 'pos' if kpis.twr and kpis.twr > 0 else 'neg' if kpis.twr and kpis.twr < 0 else '' }}">{% if kpis.coverage_estimated %}≈ {% endif %}{{ kpis.twr | pct if kpis.twr is not none else "n/a" }}</div>
+      {% if kpis.twr is none %}<div class="reason">keine Kursabdeckung</div>{% endif %}
     </div>
-    <div class="card"><div class="label">TWR</div>
-      <div class="value {{ 'pos' if kpis.twr and kpis.twr > 0 else 'neg' if kpis.twr and kpis.twr < 0 else '' }}">{{ kpis.twr | pct if kpis.twr is not none else "n/a" }}</div>
-      {% if kpis.twr is none %}<div class="reason">prices not loaded</div>{% endif %}
+    <div class="card"><div class="label">TWR p.a.</div>
+      <div class="value {{ 'pos' if kpis.twr_pa and kpis.twr_pa > 0 else 'neg' if kpis.twr_pa and kpis.twr_pa < 0 else '' }}">{{ kpis.twr_pa | pct if kpis.twr_pa is not none else "n/a" }}</div>
+      {% if kpis.twr_pa is none %}<div class="reason">Abdeckung &lt; 1 Jahr</div>{% endif %}
     </div>
-    <div class="card"><div class="label">Max drawdown</div>
+    <div class="card"><div class="label">TWR YTD</div>
+      <div class="value {{ 'pos' if kpis.twr_ytd and kpis.twr_ytd > 0 else 'neg' if kpis.twr_ytd and kpis.twr_ytd < 0 else '' }}">{{ kpis.twr_ytd | pct if kpis.twr_ytd is not none else "n/a" }}</div>
+      {% if kpis.twr_ytd is none %}<div class="reason">keine Kursabdeckung</div>{% endif %}
+    </div>
+    <div class="card"><div class="label">Benchmark TWR <span class="note">(gleicher Zeitraum)</span></div>
+      <div class="value {{ 'pos' if kpis.benchmark_twr and kpis.benchmark_twr > 0 else 'neg' if kpis.benchmark_twr and kpis.benchmark_twr < 0 else '' }}">{{ kpis.benchmark_twr | pct if kpis.benchmark_twr is not none else "n/a" }}</div>
+      {% if kpis.twr is not none and kpis.benchmark_twr is not none %}<div class="reason">Δ {{ ((kpis.twr - kpis.benchmark_twr) * 100) | round(1) }} pp</div>{% endif %}
+    </div>
+    <div class="card"><div class="label">Max Drawdown</div>
       <div class="value neg">{{ kpis.max_drawdown | pct if kpis.max_drawdown is not none else "n/a" }}</div>
-      {% if kpis.max_drawdown is none %}<div class="reason">prices not loaded</div>{% endif %}
+      {% if kpis.max_drawdown is none %}<div class="reason">keine Kursabdeckung</div>{% endif %}
     </div>
-    <div class="card"><div class="label">Invested (cost basis)</div><div class="value amt">{{ kpis.invested | eur }}</div></div>
-    <div class="card"><div class="label">Realized gain</div><div class="value amt {{ 'pos' if kpis.realized > 0 else 'neg' if kpis.realized < 0 else '' }}">{{ kpis.realized | eur(true) }}</div></div>
-    <div class="card"><div class="label">Taxes (net)</div><div class="value amt">{{ kpis.taxes | eur(true) }}</div></div>
-    <div class="card"><div class="label">Dividends</div><div class="value amt">{{ kpis.dividends | eur }}</div></div>
+    <div class="card"><div class="label">Akt. Drawdown</div>
+      <div class="value {{ 'neg' if kpis.current_drawdown and kpis.current_drawdown < 0 else '' }}">{{ kpis.current_drawdown | pct if kpis.current_drawdown is not none else "n/a" }}</div>
+    </div>
+    <div class="card"><div class="label">Volatilität p.a.</div>
+      <div class="value">{{ kpis.volatility | pct if kpis.volatility is not none else "n/a" }}</div>
+      {% if kpis.volatility is none %}<div class="reason">&lt; 120 Tageswerte</div>{% endif %}
+    </div>
+    <div class="card"><div class="label">Größte Position</div>
+      <div class="value">{{ (kpis.largest_position[1] | pct) if kpis.largest_position else "n/a" }}</div>
+      {% if kpis.largest_position %}<div class="reason">{{ chart_data.holdings_names.get(kpis.largest_position[0], kpis.largest_position[0]) }}</div>{% endif %}
+    </div>
+    <div class="card"><div class="label">Top-3-Anteil</div>
+      <div class="value">{{ kpis.top3_share | pct if kpis.top3_share is not none else "n/a" }}</div>
+    </div>
+    <div class="card"><div class="label">Turnover (12M)</div>
+      <div class="value">{{ kpis.turnover_12m | pct if kpis.turnover_12m is not none else "n/a" }}</div>
+    </div>
+    <div class="card"><div class="label">Instrumente</div>
+      <div class="value">{{ kpis.instruments_held }} <span class="note">/ {{ kpis.instruments_ever }} gesamt</span></div>
+    </div>
+    <div class="card"><div class="label">Bester Monat</div>
+      <div class="value pos">{{ kpis.best_month.ret | pct if kpis.best_month else "n/a" }}</div>
+      {% if kpis.best_month %}<div class="reason">{{ kpis.best_month.month }}</div>{% endif %}
+    </div>
+    <div class="card"><div class="label">Schlechtester Monat</div>
+      <div class="value neg">{{ kpis.worst_month.ret | pct if kpis.worst_month else "n/a" }}</div>
+      {% if kpis.worst_month %}<div class="reason">{{ kpis.worst_month.month }}</div>{% endif %}
+    </div>
+    <div class="card"><div class="label">Investiert (Kostenbasis)</div><div class="value amt">{{ kpis.invested | eur }}</div></div>
+    <div class="card"><div class="label">Realisiert</div><div class="value amt {{ 'pos' if kpis.realized > 0 else 'neg' if kpis.realized < 0 else '' }}">{{ kpis.realized | eur(true) }}</div></div>
+    <div class="card"><div class="label">Steuern netto <span class="note">(+ = Erstattung)</span></div><div class="value amt">{{ kpis.taxes | eur(true) }}</div></div>
+    <div class="card"><div class="label">Dividenden</div><div class="value amt">{{ kpis.dividends | eur }}</div></div>
   </div>
 </section>
 
 <section>
-  <h2 class="section-title">Holdings</h2>
+  <h2 class="section-title">Positionen</h2>
   <div class="table-scroll">
   <table class="full">
-    <thead><tr><th>ISIN</th><th>Name</th><th>Qty</th><th>Avg cost</th><th>Price</th><th>Value</th><th>Weight</th><th>Unrealized</th></tr></thead>
+    <thead><tr><th>ISIN</th><th>Name</th><th>Menge</th><th>Ø Kosten</th><th>Kurs</th><th>Wert</th><th>Gewicht</th><th>Unrealisiert</th></tr></thead>
     <tbody>
     {% for h in holdings %}
       <tr>
@@ -230,7 +282,7 @@ footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2r
         <td>{{ h.name }}</td>
         <td class="amt">{{ h.qty | qty }}</td>
         <td class="amt">{{ h.avg_cost | eur if h.avg_cost is not none else "n/a" }}</td>
-        <td class="amt">{{ h.price | eur if h.price is not none else "n/a" }}{% if h.price_date %} <span class="note">({{ h.price_date.isoformat() }})</span>{% endif %}</td>
+        <td class="amt">{{ h.price | eur if h.price is not none else "n/a" }}{% if h.estimated %} <span class="note" title="Aus Kaufpreisen abgeleitet, kein Marktkurs">≈</span>{% endif %}{% if h.price_date %} <span class="note">({{ h.price_date.isoformat() }})</span>{% endif %}</td>
         <td class="amt">{{ h.value | eur if h.value is not none else "n/a" }}</td>
         <td>{{ (h.weight | pct) if h.weight is not none else "n/a" }}</td>
         <td class="amt {{ 'pos' if h.unrealized and h.unrealized > 0 else 'neg' if h.unrealized and h.unrealized < 0 else '' }}">
@@ -238,10 +290,28 @@ footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2r
         </td>
       </tr>
     {% else %}
-      <tr><td colspan="8">No open positions.</td></tr>
+      <tr><td colspan="8">Keine offenen Positionen.</td></tr>
     {% endfor %}
     </tbody>
   </table>
+  </div>
+</section>
+
+<section>
+  <h2 class="section-title">Monatsrenditen <span class="note">(TWR, {{ kpis.twr_start.isoformat() if kpis.twr_start else "" }} bis {{ valuation_date.isoformat() }})</span></h2>
+  <div class="card">
+    {% if monthly_returns %}
+    <div class="heatmap-grid" id="heatmap-grid">
+      {% for m in monthly_returns %}
+      <div class="heatmap-cell{{ ' partial' if m.partial }}" style="background:{{ m.ret | heatcolor }}" title="{{ m.month }}{{ ' (unvollständig)' if m.partial }}: {{ m.ret | pct }}">
+        <span class="hm-month">{{ m.month[5:] }}/{{ m.month[2:4] }}</span><span class="hm-ret">{{ m.ret | pct }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="note" style="margin-top:.6rem">Schraffierte/markierte Monate sind unvollständig (Deckung beginnt oder endet mitten im Monat).</div>
+    {% else %}
+    <p class="note">Keine Kursabdeckung für Monatsrenditen.</p>
+    {% endif %}
   </div>
 </section>
 
@@ -249,84 +319,83 @@ footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2r
   <h2 class="section-title">Monatsdetail</h2>
   <div class="dash-row-3">
     <div class="chart-wrap"><h3>Einzahlungen / Monat</h3><div id="chart-savings"></div></div>
-    <div class="chart-wrap"><h3>Trades / Monat (netto €)</h3><div id="chart-trades"></div></div>
+    <div class="chart-wrap"><h3>Käufe vs. Verkäufe / Monat (netto €)</h3><div id="chart-trades"></div></div>
     <div class="chart-wrap"><h3>Steuern &amp; Erträge / Monat</h3><div id="chart-income"></div></div>
   </div>
 </section>
 
 <section>
-  <h2 class="section-title">Realized gains</h2>
-  <div class="table-scroll">
-  <table class="full">
-    <thead><tr><th>ISIN</th><th>Realized</th></tr></thead>
-    <tbody>
-    {% for isin, amt in realized_by_isin.items() %}
-      <tr><td>{{ isin }}</td><td class="amt {{ 'pos' if amt > 0 else 'neg' }}">{{ amt | eur(true) }}</td></tr>
-    {% else %}
-      <tr><td colspan="2">No realized gains yet.</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  <h3 style="margin-top:1.2rem">Sell list</h3>
-  <div class="table-scroll">
-  <table class="full">
-    <thead><tr><th>Date</th><th>ISIN</th><th>Qty</th><th>Proceeds</th><th>Cost</th><th>Gain</th></tr></thead>
-    <tbody>
-    {% for s in sells %}
-      <tr>
-        <td>{{ s.date.isoformat() }}</td><td>{{ s.name or s.isin }}</td>
-        <td class="amt">{{ s.qty | qty }}</td>
-        <td class="amt">{{ s.proceeds | eur }}</td>
-        <td class="amt">{{ s.cost | eur }}</td>
-        <td class="amt {{ 'pos' if s.gain > 0 else 'neg' }}">{{ s.gain | eur(true) }}</td>
-      </tr>
-    {% else %}
-      <tr><td colspan="6">No sells.</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
+  <h2 class="section-title">Handel</h2>
+  <h3>Realisiert je Instrument</h3>
+  <div class="card" id="realized-bars"></div>
+
+  <details style="margin-top:1rem">
+    <summary style="cursor:pointer;font-weight:700;padding:.4rem 0">Verkaufsliste ({{ sells | length }}) — Details ↓</summary>
+    <input type="text" id="sell-filter" placeholder="Nach ISIN oder Name filtern…" style="width:100%;margin:.6rem 0;padding:.5rem .7rem;border:1px solid var(--border);border-radius:8px;font-size:.85rem">
+    <div class="table-scroll">
+    <table class="full" id="sell-table">
+      <thead><tr><th>Datum</th><th>Name</th><th>Menge</th><th>Erlös</th><th>Kosten</th><th>Gewinn</th></tr></thead>
+      <tbody>
+      {% for s in sells %}
+        <tr data-search="{{ (s.name or s.isin) | lower }} {{ s.isin | lower }}">
+          <td>{{ s.date.isoformat() }}</td><td>{{ s.name or s.isin }}</td>
+          <td class="amt">{{ s.qty | qty }}</td>
+          <td class="amt">{{ s.proceeds | eur }}</td>
+          <td class="amt">{{ s.cost | eur }}</td>
+          <td class="amt {{ 'pos' if s.gain > 0 else 'neg' }}">{{ s.gain | eur(true) }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6">Keine Verkäufe.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </details>
 </section>
 
 <section>
-  <h2 class="section-title">Goal simulator <span class="note">— illustrative, constant return, not a forecast</span></h2>
+  <h2 class="section-title">Ziel-Simulator <span class="note">— illustrativ, konstante Rendite, keine Prognose</span></h2>
   <div class="card goal-sim">
     <div>
-      <label>Monthly saving: € <span id="g-saving-out"></span></label>
+      <label>Monatliche Sparrate: € <span id="g-saving-out"></span></label>
       <input type="range" id="g-saving" min="0" max="3000" step="50" value="{{ goal.monthly_saving | default(700) }}">
-      <label>Years: <span id="g-years-out"></span></label>
+      <label>Jahre: <span id="g-years-out"></span></label>
       <input type="range" id="g-years" min="1" max="40" step="1" value="{{ goal.years | default(10) }}">
-      <label>Annual return: <span id="g-return-out"></span></label>
+      <label>Rendite p.a.: <span id="g-return-out"></span></label>
       <input type="range" id="g-return" min="0" max="15" step="0.5" value="7">
+      <div class="preset-btns" id="g-return-presets">
+        <button data-v="4" type="button">4 %</button>
+        <button data-v="7" type="button" class="active">7 %</button>
+        <button data-v="10" type="button">10 %</button>
+      </div>
       <label>Inflation: <span id="g-inflation-out"></span></label>
       <input type="range" id="g-inflation" min="0" max="10" step="0.1" value="{{ (goal.inflation | default(0.02) * 100) }}">
-      <label>Withdrawal years: <span id="g-wyears-out"></span></label>
+      <label>Entnahmejahre: <span id="g-wyears-out"></span></label>
       <input type="range" id="g-wyears" min="1" max="40" step="1" value="20">
     </div>
     <div class="out">
-      <div class="card" style="box-shadow:none;border:1px solid var(--border)"><div class="label">Start value (current portfolio value)</div><div class="value">{{ kpis.value | eur if kpis.value is not none else "0,00 €" }}</div></div>
-      <div class="card" style="box-shadow:none;border:1px solid var(--border)"><div class="label">Future value (nominal)</div><div class="value" id="g-fv-nominal">—</div></div>
-      <div class="card" style="box-shadow:none;border:1px solid var(--border)"><div class="label">Future value (real)</div><div class="value" id="g-fv-real">—</div></div>
-      <div class="card" style="box-shadow:none;border:1px solid var(--border)"><div class="label">Monthly withdrawal (annuity)</div><div class="value" id="g-withdrawal">—</div></div>
+      <div class="card" style="box-shadow:none;border:1px solid var(--border)"><div class="label">Startwert (aktueller Depotwert)</div><div class="value">{{ kpis.value | eur if kpis.value is not none else "0,00 €" }}</div></div>
+      <div class="card" style="box-shadow:none;border:1px solid var(--border)"><div class="label">Zukunftswert (nominal)</div><div class="value" id="g-fv-nominal">—</div></div>
+      <div class="card" style="box-shadow:none;border:1px solid var(--border)"><div class="label">Zukunftswert (real)</div><div class="value" id="g-fv-real">—</div></div>
+      <div class="card" style="box-shadow:none;border:1px solid var(--border)"><div class="label">Monatliche Entnahme (Annuität)</div><div class="value" id="g-withdrawal">—</div></div>
     </div>
   </div>
 </section>
 
 <section>
-  <h2 class="section-title">Reconciliation — Vorabpauschale checkpoints</h2>
+  <h2 class="section-title">Abgleich — Vorabpauschale-Prüfpunkte</h2>
   <div class="table-scroll">
   <table class="full">
-    <thead><tr><th>ISIN</th><th>Name</th><th>Checkpoint</th><th>Stated qty</th><th>Reconstructed qty</th><th>Match</th></tr></thead>
+    <thead><tr><th>ISIN</th><th>Name</th><th>Stichtag</th><th>Gemeldete Menge</th><th>Rekonstruierte Menge</th><th>Abgleich</th></tr></thead>
     <tbody>
     {% for v in vap_checks %}
       <tr>
         <td>{{ v.isin }}</td><td>{{ v.name }}</td><td>{{ v.checkpoint.isoformat() }}</td>
         <td class="amt">{{ v.stated_qty | qty }}</td><td class="amt">{{ v.reconstructed_qty | qty }}</td>
-        <td class="{{ 'badge-ok' if v.ok else 'badge-bad' }}">{{ "✓" if v.ok else "✗ diff " + (v.diff | qty) }}</td>
+        <td class="{{ 'badge-ok' if v.ok else 'badge-bad' }}">{{ "✓" if v.ok else "✗ Diff " + (v.diff | qty) }}</td>
       </tr>
     {% else %}
-      <tr><td colspan="6">No Vorabpauschale checkpoints in this export.</td></tr>
+      <tr><td colspan="6">Keine Vorabpauschale-Prüfpunkte in diesem Export.</td></tr>
     {% endfor %}
     </tbody>
   </table>
@@ -334,12 +403,33 @@ footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2r
 </section>
 
 <section id="data-quality">
-  <h2 class="section-title">Data quality <span class="note">({{ event_count }} rows, {{ unknown_count }} unknown, {{ buy_count }} buys, {{ sell_count }} sells, cash Σ {{ cash_sum | eur }})</span></h2>
+  <h2 class="section-title">Datenqualität <span class="note">({{ event_count }} Buchungen, {{ unknown_count }} unbekannt, {{ buy_count }} Käufe, {{ sell_count }} Verkäufe, Cash Σ {{ cash_sum | eur }})</span></h2>
+
+  <h3>Kursabdeckung je ISIN</h3>
+  <div class="table-scroll" style="margin-bottom:1rem">
+  <table class="full">
+    <thead><tr><th>ISIN</th><th>Name</th><th>Status</th><th>Von</th><th>Bis</th><th>Markttage</th><th>Implizite Tage</th></tr></thead>
+    <tbody>
+    {% for p in price_coverage %}
+      <tr>
+        <td>{{ p.isin }}</td><td>{{ p.name }}</td><td>{{ p.status }}</td>
+        <td>{{ p['from'].isoformat() if p['from'] else "—" }}</td>
+        <td>{{ p.to.isoformat() if p.to else "—" }}</td>
+        <td class="amt">{{ p.market_days }}</td>
+        <td class="amt">{{ p.implied_days }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7">Keine Kurse geladen.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
   <ul class="dq-list">
   {% for item in dq_items %}
     <li class="{{ item.severity }}">{{ item.message }}</li>
   {% else %}
-    <li>No data-quality issues found.</li>
+    <li>Keine Datenqualitätsprobleme gefunden.</li>
   {% endfor %}
   </ul>
 </section>
@@ -455,6 +545,52 @@ footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2r
     });
   });
   renderDonut("top");
+
+  // --- Realisiert je Instrument: horizontal bar list, top/bottom 5 + rest collapsed ---
+  (function () {
+    var el = document.getElementById("realized-bars");
+    if (!el) return;
+    var entries = Object.keys(data.realized_by_isin_named || {}).map(function (k) {
+      return { name: k, value: data.realized_by_isin_named[k] };
+    });
+    if (!entries.length) {
+      el.innerHTML = '<p class="note">Noch keine realisierten Gewinne.</p>';
+      return;
+    }
+    entries.sort(function (a, b) { return b.value - a.value; });
+    var maxAbs = Math.max.apply(null, entries.map(function (e) { return Math.abs(e.value); })) || 1;
+    function rowHtml(e) {
+      var pct = Math.min(100, Math.abs(e.value) / maxAbs * 50);
+      var cls = e.value >= 0 ? "pos" : "neg";
+      var fillStyle = e.value >= 0 ? ("width:" + pct + "%") : ("width:" + pct + "%");
+      return '<div class="item"><span class="name" title="' + e.name + '">' + e.name + '</span>' +
+        '<span class="bar-track"><span class="bar-fill ' + cls + '" style="' + fillStyle + '"></span></span>' +
+        '<span class="v ' + cls + '">' + fmtEurFull(e.value) + '</span></div>';
+    }
+    var top5 = entries.slice(0, 5);
+    var bottom5 = entries.length > 10 ? entries.slice(-5) : entries.slice(5);
+    var rest = entries.length > 10 ? entries.slice(5, -5) : [];
+    var html = '<div class="bar-list">' + top5.map(rowHtml).join("");
+    if (rest.length) {
+      html += '<details><summary style="cursor:pointer;color:var(--muted);font-size:.8rem;padding:.3rem 0">' + rest.length + ' weitere …</summary>' +
+        rest.map(rowHtml).join("") + '</details>';
+    }
+    html += bottom5.map(rowHtml).join("") + '</div>';
+    el.innerHTML = html;
+  })();
+
+  // --- Verkaufsliste filter -------------------------------------------------
+  (function () {
+    var input = document.getElementById("sell-filter");
+    if (!input) return;
+    input.addEventListener("input", function () {
+      var q = input.value.trim().toLowerCase();
+      document.querySelectorAll("#sell-table tbody tr").forEach(function (tr) {
+        var hay = tr.getAttribute("data-search") || "";
+        tr.style.display = !q || hay.indexOf(q) !== -1 ? "" : "none";
+      });
+    });
+  })();
 
   // --- Wealth chart: portfolio value vs invested capital vs benchmark ----
   var wealth = data.wealth || {};
@@ -625,6 +761,15 @@ footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2r
     document.getElementById("g-fv-real").textContent = fmtEurFull(fvReal);
     document.getElementById("g-withdrawal").textContent = fmtEurFull(withdrawal) + " / month";
   }
+
+  document.querySelectorAll("#g-return-presets button").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      document.querySelectorAll("#g-return-presets button").forEach(function (b) { b.classList.remove("active"); });
+      btn.classList.add("active");
+      els.ret.value = btn.dataset.v;
+      recompute();
+    });
+  });
 
   Object.keys(els).forEach(function (k) { els[k].addEventListener("input", recompute); });
   recompute();
