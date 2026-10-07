@@ -181,11 +181,11 @@
         </div>
         <div class="tile">
           <div class="label">vs. Benchmark</div>
-          {% if kpis.twr is not none and kpis.benchmark_twr is not none %}
+          {% if kpis.twr is not none and kpis.benchmark_twr is not none and kpis.coverage_implied_share < 0.20 %}
           <div class="value {{ 'pos' if kpis.twr > kpis.benchmark_twr else 'neg' }}">{{ ((kpis.twr - kpis.benchmark_twr) * 100) | de_num(1, true) }} pp</div>
           <div class="sub">TWR, gleicher Zeitraum{% if kpis.coverage_estimated %} · ≈{% endif %}</div>
           {% else %}
-          <div class="value">n/a</div><div class="sub">keine Kursabdeckung</div>
+          <div class="value">n/a</div><div class="sub">{% if kpis.twr is not none and kpis.benchmark_twr is not none %}Marktabdeckung &lt; 80 %{% else %}keine Kursabdeckung{% endif %}</div>
           {% endif %}
         </div>
       </div>

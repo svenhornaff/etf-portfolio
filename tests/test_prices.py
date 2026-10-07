@@ -61,11 +61,11 @@ def test_resolve_closes_no_ticker_no_trades_outside_span(tmp_path):
     assert series.closes[date(2025, 1, 1)] == Decimal("10")
 
 
-def test_resolve_closes_never_mixes_sources_within_one_span(tmp_path):
-    """docs/dev/report-v3-concept.md §1: once a span has *any* market data,
-    the whole span is priced from the market — gaps are left unpriced, not
-    silently patched with an implied price (the bug that caused the hero
-    chart spikes).
+def test_resolve_closes_leading_gap_before_first_market_quote_uses_implied(tmp_path):
+    """docs/dev/isin-ticker-resolution-concept.md: a real case (VUAA.DE's Yahoo
+    history starting well after the ISIN was first held) means a single,
+    one-way implied-to-market switch at the ticker's own first quote is
+    allowed — days strictly before it are implied, not left unpriced.
     """
     cache_path = tmp_path / "prices.json"
     cache = load_cache(cache_path)
@@ -74,19 +74,49 @@ def test_resolve_closes_never_mixes_sources_within_one_span(tmp_path):
     save_cache(cache_path, cache)
 
     instruments = {"YY": {"ticker": "ANY.DE"}}
-    # trade_points would, under the old per-day-fallback logic, have implied-filled day 1
     trade_points = {"YY": [(date(2025, 1, 1), Decimal("10"))]}
     spans: dict[str, list[tuple[date, date | None]]] = {"YY": [(date(2025, 1, 1), date(2025, 1, 10))]}
 
-    series_by_isin, _ = resolve_closes(instruments, trade_points, spans, date(2025, 1, 10), cache_path, offline=True)
+    series_by_isin, warnings = resolve_closes(instruments, trade_points, spans, date(2025, 1, 10), cache_path, offline=True)
     series = series_by_isin["YY"]
 
-    # day 1 is before the only market quote and must NOT be backfilled from
-    # trade_points once the span committed to "market"
-    assert date(2025, 1, 1) not in series.closes
-    assert series.closes[date(2025, 1, 5)] == Decimal("50")
-    assert series.source[date(2025, 1, 5)] == "market"
-    assert all(s == "market" for s in series.source.values())
+    # days 1-4, before the ticker's first ever market quote, are implied
+    for d in range(1, 5):
+        assert series.source[date(2025, 1, d)] == "implied"
+        assert series.closes[date(2025, 1, d)] == Decimal("10")
+    # day 5 onward is market, and stays market even where carry-forward is
+    # doing the work (days 6-10 have no quote of their own) — no reverting
+    # back to implied once the market series has started
+    for d in range(5, 11):
+        assert series.source[date(2025, 1, d)] == "market"
+        assert series.closes[date(2025, 1, d)] == Decimal("50")
+    assert any("market data starts 2025-01-05" in w for w in warnings)
+
+
+def test_resolve_closes_never_mixes_sources_mid_span_after_market_starts(tmp_path):
+    """Once the market series has started, a day it genuinely has no quote
+    for (beyond the carry-forward window) stays unpriced — it is NOT
+    patched with an implied price. Only the leading edge gets that
+    exception, never the middle or end of a span.
+    """
+    cache_path = tmp_path / "prices.json"
+    cache = load_cache(cache_path)
+    # market data only for day 1 and day 30 — day 15 is a genuine mid-span
+    # gap far beyond the 10-day carry-forward window
+    merge_into_cache(cache, "YY", {date(2025, 1, 1): Decimal("10"), date(2025, 1, 30): Decimal("99")})
+    save_cache(cache_path, cache)
+
+    instruments = {"YY": {"ticker": "ANY.DE"}}
+    trade_points = {"YY": [(date(2025, 1, 1), Decimal("10")), (date(2025, 1, 30), Decimal("99"))]}
+    spans: dict[str, list[tuple[date, date | None]]] = {"YY": [(date(2025, 1, 1), date(2025, 1, 30))]}
+
+    series_by_isin, _ = resolve_closes(instruments, trade_points, spans, date(2025, 1, 30), cache_path, offline=True)
+    series = series_by_isin["YY"]
+
+    # day 15 is well past the 10-day carry-forward window from day 1 and
+    # before day 30 — must stay unpriced, NOT be implied-patched
+    assert date(2025, 1, 15) not in series.closes
+    assert "implied" not in series.source.values()
 
 
 def test_resolve_closes_different_spans_can_pick_different_sources(tmp_path):

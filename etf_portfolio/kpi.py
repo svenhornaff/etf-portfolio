@@ -619,6 +619,56 @@ def unusual_jumps(
     return out
 
 
+def execution_vs_close(
+    day: date,
+    ledger: LedgerResult,
+    series_by_isin: dict[str, PriceSeries],
+    threshold: float = 0.03,
+) -> list[dict]:
+    """Compare each BUY/SELL booked on `day` against that day's close.
+
+    A pure internal reallocation (sell A, buy B, same day) cannot move a
+    close-to-close TWR series if both legs execute near that day's close
+    — conservation of value. A jump on a day that *looks* like a clean
+    rebalance means at least one leg's actual execution price diverged
+    from the close used to value the position. This makes that divergence
+    explicit instead of a vague "rebalancing" guess, per a real case where
+    a semiconductor-ETF sale executed ~12% below that day's close.
+    """
+    out: list[dict] = []
+    for isin, lots in ledger.lots.items():
+        series = series_by_isin.get(isin)
+        if not series:
+            continue
+        hit = series.closes.get(day)
+        if hit is None:
+            continue
+        for lot in lots:
+            if lot.date == day and lot.qty > 0:
+                trade_price = lot.cost / lot.qty
+                diff = float(trade_price / hit) - 1.0
+                if abs(diff) >= threshold:
+                    out.append(
+                        {"isin": isin, "side": "buy", "trade_price": float(trade_price), "close": float(hit), "diff": diff}
+                    )
+    for sell in ledger.sells:
+        if sell.date != day or not sell.qty:
+            continue
+        series = series_by_isin.get(sell.isin)
+        if not series:
+            continue
+        hit = series.closes.get(day)
+        if hit is None:
+            continue
+        trade_price = sell.proceeds / sell.qty
+        diff = float(trade_price / hit) - 1.0
+        if abs(diff) >= threshold:
+            out.append(
+                {"isin": sell.isin, "side": "sell", "trade_price": float(trade_price), "close": float(hit), "diff": diff}
+            )
+    return out
+
+
 def income_yield(dividends_annualized: Decimal, value: Decimal | None) -> float | None:
     """Trailing dividend yield on current value — None if value is unavailable."""
     if not value:

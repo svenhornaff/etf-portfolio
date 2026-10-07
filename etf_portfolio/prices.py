@@ -224,13 +224,19 @@ def resolve_closes(
 
     docs/dev/report-v3-concept.md §1: one source per holding *span*, never
     mixed. For each span independently: if the configured ticker produced
-    any real market data overlapping that span, the whole span is priced
-    from the market (carry-forward across weekends/holidays as usual; a
-    day the market feed genuinely has no quote for stays unpriced, it is
-    NOT patched with an implied price). Otherwise the whole span is priced
-    from §2.3's implied price — derived from the ISIN's own trade amounts
-    — end to end. A re-buy after fully selling out is a new span and may
-    independently pick a different source (e.g. a ticker only listed
+    any real market data overlapping that span, the whole span commits to
+    the market. The one exception is the leading edge, documented and
+    requested after a real case (VUAA.DE's Yahoo history starts
+    2024-12-30, well after some holding spans begin): days strictly
+    *before* the ticker's own first available market quote use the
+    implied price instead of being left unpriced — a single, one-way
+    switch (implied → market, never back), not the per-day flip-flopping
+    the span-level rule exists to prevent. Once the market series has
+    started, a day it genuinely has no quote for (a real gap, not a
+    before-listing gap) stays unpriced; it is NOT patched with an implied
+    price. A span with no market data at all is priced from §2.3's implied
+    price end to end. A re-buy after fully selling out is a new span and
+    may independently pick a different source (e.g. a ticker only listed
     later). Days with neither are left unpriced; callers must treat that
     as "missing", never as zero.
     """
@@ -252,10 +258,12 @@ def resolve_closes(
     for isin, spans in holding_spans_by_isin.items():
         series = PriceSeries()
         market = market_closes.get(isin, {})
+        first_market_day = min(market) if market else None
         points = sorted(trade_points_by_isin.get(isin, []))
         has_ticker = bool((instruments.get(isin) or {}).get("ticker"))
         any_implied_span = False
         any_market_span = False
+        any_leading_implied = False
         for span_start, span_end in spans:
             last_day = span_end or as_of
             # Decide the source for this *entire* span up front, from
@@ -266,10 +274,21 @@ def resolve_closes(
             if span_has_market:
                 any_market_span = True
                 while day <= last_day:
-                    hit = close_on_or_before(market, day)
-                    if hit is not None:
-                        series.closes[day] = hit[0]
-                        series.source[day] = "market"
+                    if first_market_day is not None and day < first_market_day:
+                        # Leading edge, before the ticker's own history begins:
+                        # one-way implied fallback, never used again once the
+                        # market series has started (see docstring).
+                        implied = _implied_price_on(points, day)
+                        if implied is not None:
+                            series.closes[day] = implied
+                            series.source[day] = "implied"
+                            any_implied_span = True
+                            any_leading_implied = True
+                    else:
+                        hit = close_on_or_before(market, day)
+                        if hit is not None:
+                            series.closes[day] = hit[0]
+                            series.source[day] = "market"
                     day += timedelta(days=1)
             else:
                 any_implied_span = True
@@ -280,6 +299,11 @@ def resolve_closes(
                         series.source[day] = "implied"
                     day += timedelta(days=1)
         series_by_isin[isin] = series
+        if any_leading_implied and first_market_day is not None:
+            warnings.append(
+                f"{isin}: market data starts {first_market_day.isoformat()}, after this ISIN was first "
+                f"held — using implied prices before that date (see Kursabdeckung)"
+            )
         if any_implied_span and not has_ticker:
             warnings.append(f"{isin}: no ticker configured — using implied prices from trade amounts (≈)")
         elif any_implied_span:

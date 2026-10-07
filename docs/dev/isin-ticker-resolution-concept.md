@@ -13,7 +13,18 @@ database, no server.
 > (benchmark-sentence gate, risk-KPI dampening, TER health check) are fixed in §1.3. The automated
 > `isin_resolver.py`/`--resolve-tickers` design in §2 is kept as the right tool for the *next* batch
 > of ISINs (anything beyond hand-picked, high-confidence, well-known funds), not retracted — see
-> §1.4 for when it's actually worth building.
+> §1.6 for when it's actually worth building.
+
+> **Update 2026-10-07 (later the same day): a review caught two real bugs in how this was first
+> explained, both now fixed in code — see §1.7.** `VUAA.DE`'s short Yahoo history (from
+> 2024-12-30, not the ISIN's real 2024-10-16 start) was silently pushing `twr_start` 2.5 months
+> late, cutting the opening contribution out of every TWR-based figure while XIRR kept the true
+> start date — fixed via a one-way implied→market switch inside `resolve_closes()`. The remaining
+> "unusual jump" on 2026-06-08 was also mis-explained as "a rebalancing trade": a pure
+> reallocation can't move a close-to-close series by itself. The real cause, found by comparing
+> ledger trade prices to that day's close, is a −12.1% execution-vs-close divergence on one sell
+> leg, now surfaced explicitly via `kpi.execution_vs_close()`. Implied share: 14% → 15% (still
+> under target).
 
 ## 0. Framing: this is not a database integration
 
@@ -65,14 +76,21 @@ Verification method, for each: `curl .../v8/finance/chart/<ticker>?range=5d` and
 concept from §2.1, just run by hand against six specific tickers instead of an automated sweep
 over thirty unknowns. All six came back correct on the first try; nothing here was wrong.
 
-### 1.2 One caveat found during verification: `VUAA.DE`'s history starts 2024-12-30
+### 1.2 One caveat found during verification: `VUAA.DE`'s history starts 2024-12-30 — **corrected in §1.7, this framing was wrong**
+
+*(Original text, kept for context on what was first assumed — see §1.7 for what a review found
+and the actual fix.)*
 
 `IE00BFMXXD54` was first bought 2024-10-16, but Yahoo's `VUAA.DE` history only goes back to
-2024-12-30. Per §1's one-source-per-span rule (`report-v3-concept.md` §1): since this span now has
-real market data somewhere inside it, the whole span commits to "market" — the ~2.5 months before
-the ticker's own history begins are **unpriced**, not silently patched with an implied price. This
-is the system working as designed, not a new bug; documented inline in `instruments.yaml` next to
-the entry so it isn't rediscovered as a surprise later.
+2024-12-30. ~~Per §1's one-source-per-span rule (`report-v3-concept.md` §1): since this span now
+has real market data somewhere inside it, the whole span commits to "market" — the ~2.5 months
+before the ticker's own history begins are **unpriced**, not silently patched with an implied
+price. This is the system working as designed, not a new bug.~~ **Wrong**: being unpriced for 2.5
+months at the very start of the ledger's history means `compute_coverage` can't find a price for
+every then-held ISIN that far back, which pushes `coverage.start`/`twr_start` forward to
+2024-12-30 — cutting out the opening 10.000€ investment from every TWR-based figure (TWR, TWR
+p.a., drawdown, volatility, the monthly heatmap, the benchmark comparison) while XIRR kept running
+from the true start. Fixed in §1.7.
 
 ### 1.3 Measured effect, and the three bugs it unblocked
 
@@ -106,7 +124,10 @@ matters), all fixed the same session:
 "realisiert + unrealisiert" when the underlying data is realized-only — was also fixed, title now
 reads "Realisiertes Ergebnis je Instrument" with an explicit note about what's excluded and why.)
 
-### 1.4 Rechecking the "unusual jump" list with real prices in
+### 1.4 Rechecking the "unusual jump" list with real prices in — **mechanism corrected in §1.7**
+
+*(Original text, kept for context — the conclusion "real move, not a bug" turned out to be right,
+but the reasoning why was wrong; see §1.7.)*
 
 The explicit ask after adding tickers was: recheck Datenqualität's unusual one-day-jump list,
 since "any jump left after this is either a real move or a bug, and I couldn't check that without
@@ -119,13 +140,14 @@ real prices." Before this change there were 6 flagged jumps; **after, there is 1
             IE00BF4RFH31 (small-cap ETF) bought same day, qty 0 → 1111
 ```
 
-This is a real, large, same-day portfolio rebalancing (full exit of one position funding two new
-ones) — not a pricing artifact. Every price involved on that date is tagged `"market"`, not
-`"implied"`. **Verdict: real move, not a bug.** The remaining ~−10% single-day swing is
-consistent with a big reallocation day (realized-gain tax drag on the sale plus normal
-intraday-vs-close execution noise on three trades at once) rather than anything resolve_closes()
-or the ledger gets wrong; not fully decomposed further since the data quality disclosure
-(`kpi.unusual_jumps()` → Datenqualität) already does its job here: surfaced, explained, not hidden.
+~~This is a real, large, same-day portfolio rebalancing (full exit of one position funding two new
+ones) — not a pricing artifact. **Verdict: real move, not a bug.** The remaining ~−10% single-day
+swing is consistent with a big reallocation day... rather than anything resolve_closes() or the
+ledger gets wrong.~~ **Wrong mechanism**: a pure internal reallocation (sell A, buy B, same day)
+cannot by itself move a close-to-close value series — both legs valued at the same day's close
+conserve total value exactly. A jump on a day that looks like a clean rebalance means one leg's
+*actual execution price* diverged from the close used to value it. See §1.7 for the real cause,
+found by comparing ledger trade prices to that day's cached close, not by guessing.
 
 ### 1.5 Current state (measured 2026-10-07)
 
@@ -157,6 +179,69 @@ an increasingly well-tickered ledger. Build §2 if: (a) a future CSV import adds
 long-held positions without obvious tickers, or (b) you want the remaining ~24 resolved for
 completeness regardless of their KPI impact. Otherwise this concept's automated design stays as a
 ready-to-build reference, not a todo.
+
+### 1.7 A review caught two real bugs in §1.2/§1.4, both fixed (2026-10-07, same day)
+
+A review of the shipped commit, re-run against `compute_coverage` and the actual trade ledger
+instead of taking the earlier framing at face value, found that both §1.2 and §1.4 above were
+wrong in exactly the way flagged — and both are now fixed in code, not just reworded.
+
+**Bug A — `VUAA.DE`'s 2.5-month gap silently moved `twr_start` to 2024-12-30.** Walked it through
+`compute_coverage`: a day with *zero* price entry for a then-held ISIN (not "implied", not
+"market", nothing) counts as uncovered, and `coverage.start` is set to the day *after* the last
+such day. Since the VUAA.DE span committed fully to "market" the moment any market data existed
+in it, the 2024-10-16–2024-12-29 stretch had no entry at all. Result: TWR, TWR p.a., max
+drawdown, volatility, the monthly heatmap, and the benchmark comparison all silently started
+2024-12-30 — cutting out the opening 10.000€ contribution — while XIRR kept running from the true
+start, 2024-10-16. The "Seit Start erzielten Sie X % p.a. (XIRR) und liegen Y pp vor dem
+Vergleichsindex" sentence was therefore combining two different start dates without saying so.
+
+*Fix* (chose the preferred option offered: allow one switch at the start, not a longer EUR
+listing — `VUAA.MI`/Milan wasn't checked, this was simpler and sufficient): inside
+`prices.resolve_closes()`, once a span commits to "market", days strictly *before* that ticker's
+own first-ever market quote now use the implied price instead of being left unpriced. This is a
+single, one-way boundary (implied → market, never back) — not the per-day mixing §1's rule exists
+to prevent, and not reintroduced: a day *after* the market series has started that genuinely has
+no quote (a real gap, not a before-listing gap) still stays unpriced, verified by a dedicated
+regression test (`test_resolve_closes_never_mixes_sources_mid_span_after_market_starts`).
+Kursabdeckung now shows this explicitly: a warning naming the ISIN and the date its market data
+starts. **Measured result: `twr_start` is back to 2024-10-16 (the true start); implied share rose
+slightly to 15% (was 14%, since those leading gap-days now count honestly as implied) — still
+well under the 20% target.**
+
+**Bug B — the 2026-06-08 jump explanation ("rebalancing") was mechanistically wrong.** A pure
+internal reallocation (sell A, buy B, same day) cannot move a close-to-close value series by
+itself — both legs valued at the same day's close conserve total value exactly; conservation of
+value, not a guess. A jump on a day that looks like a clean swap means one leg's *actual execution
+price* diverged from the close used to value it. Checked directly, trade price vs. that day's
+cached close, computed from the ledger's own `Lot`/`SellRecord` data (not estimated from the CSV
+by hand): the `IE000I8KRLL9` (iShares MSCI Global Semiconductors) sale executed at ≈16,02€/share
+against a closing price of 18,22€/share that day — a **−12,1% divergence**. The NVIDIA and
+small-cap-ETF buys that same day were both within 1% of their respective closes, i.e. fine.
+Order numbers (the sale's order number is markedly lower than the two buys') are consistent with
+the sale executing earlier in the day than the buys, on an ETF that had already dropped ~8% over
+the prior week — consistent with real intraday volatility on a concentrated, volatile sector ETF,
+not proof of a booking-date bug; not conclusively decided either way without independent intraday
+OHLC data, which isn't available.
+
+*Fix*: added `kpi.execution_vs_close(day, ledger, series_by_isin, threshold=0.03)`, which compares
+every BUY/SELL booked that day against that day's close using the ledger's own trade records.
+When a jump coincides with a ≥3% divergence, the Datenqualität message now names the instrument,
+the side (Kauf/Verkauf), and the exact percentage instead of guessing "rebalancing":
+
+```
+2026-06-08: Depotwert-Tagesrendite -10.4% (Benchmark -0.5%) — Ausführungskurs (Verkauf iShares
+MSCI Global Semiconductors) weicht -12.1% vom Schlusskurs ab, nicht ein reiner Umschichtungs-Effekt
+```
+
+**Smaller fix, same session**: the "vs. Benchmark" KPI tile (`templates/report.html.j2`, the hero
+row, not the narrative sentence) had no `coverage_implied_share < 0.20` guard at all — only the
+summary sentence did. Harmless at 14–15%, but it would have silently shown a confident number
+again if coverage regressed. Added the same gate, with a distinct "Marktabdeckung < 80 %" reason
+when the gate trips vs. "keine Kursabdeckung" when there's no benchmark series at all.
+
+6 of the new/rewritten tests live in `tests/test_prices.py` (2) plus the existing
+`tests/test_health_and_narrative.py`; 40/40 tests pass.
 
 ## 2. Design
 
@@ -319,7 +404,8 @@ become worth resolving automatically (new long-held positions, or wanting full c
 
 - [x] 6 tickers verified live and added to `instruments.yaml` (§1.1), with the `VUAA.DE`
   short-history caveat documented inline (§1.2).
-- [x] Measured implied share 71% → 14% (§1.3/§1.5), real build, not a projection.
+- [x] Measured implied share 71% → 14% → 15% after the §1.7 coverage fix (§1.3/§1.5), real
+  build, not a projection; still well under the 20% target.
 - [x] `narrative.py` benchmark-sentence gate fixed `0.80 → 0.20` (§1.3.1).
 - [x] Risiko KPI row visually dampened (`.estimated-risk`) + ⚠ banner when
   `coverage_implied_share >= 0.20` (§1.3.2) — closes the open item from
@@ -328,9 +414,18 @@ become worth resolving automatically (new long-held positions, or wanting full c
   (§1.3.3).
 - [x] Contribution chart title corrected to say "Realisiertes…", not "realisiert + unrealisiert"
   (§1.3, parenthetical).
-- [x] Unusual-jump list rechecked with real prices: 6 → 1 remaining, traced to a real same-day
-  rebalancing trade, not a bug (§1.4).
-- [x] 6 new regression tests (`tests/test_health_and_narrative.py`); all 39 tests pass.
+- [x] Unusual-jump list rechecked with real prices: 6 → 1 remaining (§1.4) — **the
+  "rebalancing" explanation was mechanistically wrong; corrected in §1.7** to the real cause
+  (a -12.1% execution-vs-close divergence on the sell leg), found and fixed with
+  `kpi.execution_vs_close()`, not just re-explained.
+- [x] **§1.7, found by a review and fixed the same day**: `compute_coverage`'s `twr_start` was
+  silently pushed from 2024-10-16 to 2024-12-30 by `VUAA.DE`'s short Yahoo history — fixed via a
+  single one-way implied→market switch at the ticker's first quote in `resolve_closes()`, with a
+  regression test proving mid-span gaps still don't get the same treatment.
+- [x] `templates/report.html.j2`'s "vs. Benchmark" KPI tile gated on `coverage_implied_share <
+  0.20`, matching the summary sentence's gate (§1.7) — it had no gate at all before.
+- [x] 8 new/rewritten regression tests total (2 in `tests/test_prices.py`, 6 in
+  `tests/test_health_and_narrative.py`); all 40 tests pass.
 - [ ] `isin_resolver.py` / `--resolve-tickers` (§2) — **not built**, judged not worth it yet (§1.6).
 - [ ] The larger "Readability" punch list from the same review (dev-text leaking into the report,
   placeholder-card collapse, asset-class donut, contribution-bar label width, date/number format

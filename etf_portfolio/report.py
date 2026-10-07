@@ -396,16 +396,37 @@ def build_ctx(
 
     for jump in unusual_jumps:
         bench_text = f"{jump['benchmark_ret']:+.1%}" if jump["benchmark_ret"] is not None else "n/a"
-        dq_items.append(
-            {
-                "severity": "info",
-                "message": (
-                    f"{jump['date'].isoformat()}: Depotwert-Tagesrendite {jump['portfolio_ret']:+.1%} "
-                    f"(Benchmark {bench_text}) — ungewöhnlicher Ausschlag, nicht notwendigerweise ein Fehler "
-                    "(konzentriertes Themen-Depot kann stärker schwanken als der Index)"
-                ),
-            }
-        )
+        # A jump on a day with trades might be a clean rebalance (close-to-close
+        # value is conserved if both legs execute near that day's close) or it
+        # might mean a leg's actual execution price diverged from the close used
+        # to value it — check before guessing which, per a real case where a
+        # same-day "rebalance" wasn't the cause, a ~12% execution/close gap was.
+        divergences = kpi.execution_vs_close(jump["date"], ledger, series_by_isin)
+        if divergences:
+            worst = max(divergences, key=lambda d: abs(d["diff"]))
+            name = (instruments_cfg.get(worst["isin"], {}) or {}).get("short") or ledger.names.get(worst["isin"]) or worst["isin"]
+            side_text = "Verkauf" if worst["side"] == "sell" else "Kauf"
+            dq_items.append(
+                {
+                    "severity": "info",
+                    "message": (
+                        f"{jump['date'].isoformat()}: Depotwert-Tagesrendite {jump['portfolio_ret']:+.1%} "
+                        f"(Benchmark {bench_text}) — Ausführungskurs ({side_text} {name}) weicht "
+                        f"{worst['diff']:+.1%} vom Schlusskurs ab, nicht ein reiner Umschichtungs-Effekt"
+                    ),
+                }
+            )
+        else:
+            dq_items.append(
+                {
+                    "severity": "info",
+                    "message": (
+                        f"{jump['date'].isoformat()}: Depotwert-Tagesrendite {jump['portfolio_ret']:+.1%} "
+                        f"(Benchmark {bench_text}) — ungewöhnlicher Ausschlag, nicht notwendigerweise ein Fehler "
+                        "(konzentriertes Themen-Depot kann stärker schwanken als der Index)"
+                    ),
+                }
+            )
 
     kpis = {
         "net_contributions": net_contrib,

@@ -301,19 +301,29 @@ not `0.40` — tune as you like). [x] `risk_free` added and wired into Sharpe/So
 
 > **Update 2026-10-07**: item 1 below is done — see `docs/dev/isin-ticker-resolution-concept.md`
 > §1. Six hand-verified tickers for the biggest historical holdings dropped implied price share
-> from 71 % to 14 % (under the 20 % target) without building an automated resolver. The three
+> from 71 % to 15 % (under the 20 % target) without building an automated resolver. The three
 > "gating" bugs that review also found (benchmark-sentence threshold, risk-KPI dampening, TER
 > health check) are fixed too — see that doc's §1.3/§6. A fourth review that day added a larger
 > "Readability" punch list (§12a below), not yet actioned.
+>
+> **Update 2026-10-07, later**: a follow-up review caught two real bugs in how the ticker fix was
+> first explained — both are now fixed in code, see `isin-ticker-resolution-concept.md` §1.7.
+> `VUAA.DE`'s short Yahoo history (from 2024-12-30, not this ISIN's true 2024-10-16 start) was
+> silently pushing `twr_start` 2.5 months late — cutting the opening contribution out of every
+> TWR-based figure while XIRR kept the real start date — fixed via a one-way implied→market
+> switch inside `resolve_closes()`. Item 5's "ATH marker near the 2026-06-08 rebalancing day" note
+> below also needs revising: that jump wasn't a rebalancing effect at all (a pure swap can't move
+> a close-to-close series), it was a −12.1 % execution-vs-close divergence on one sell leg, now
+> surfaced explicitly by `kpi.execution_vs_close()` instead of mis-attributed.
 
 In priority order, based on what actually matters once you've seen the v3 report:
 
-1. ~~**Source real tickers for the historical ISINs**~~ — **done 2026-10-07**, 71 % → 14 %
-   implied, see `isin-ticker-resolution-concept.md`.
+1. ~~**Source real tickers for the historical ISINs**~~ — **done 2026-10-07**, 71 % → 15 %
+   implied, see `isin-ticker-resolution-concept.md` §1 (and §1.7 for two follow-up bug fixes).
 2. **Fill in `instruments.yaml`'s factsheet fields** (`ter`, `regions`, `sectors`, `currency`, `top_holdings`, `role`) for the 4 held funds — unlocks weighted TER, look-through, overlap, and the core/satellite health check in one go. Still the "30-minute chore" from §6, unchanged.
 3. **Step D** (model portfolios + risk/return scatter) — meaningful comparison context, moderate effort, no blockers.
 4. **Per-instrument income** in the contribution chart — needs `ledger.py` to book `DIVIDEND`/`TAX`/`TAX_VAP` against an ISIN, not just a month. Small, contained ledger change.
-5. **Hero chart**: event markers (deposit ticks / switch dots), direct line-end labels, per-segment "estimated" styling, drawdown-bracket annotation. Cosmetic/UX, no data dependency. (ATH marker is known to sit near the 2026-06-08 rebalancing day traced in `isin-ticker-resolution-concept.md` §1.4 — worth a visual recheck now that the price feeding it is real, not implied.)
+5. **Hero chart**: event markers (deposit ticks / switch dots), direct line-end labels, per-segment "estimated" styling, drawdown-bracket annotation. Cosmetic/UX, no data dependency. (The ATH marker sits near 2026-06-08, which `isin-ticker-resolution-concept.md` §1.7 traces to a real −12.1 % execution-vs-close divergence on one trade leg, not a rebalancing effect — worth a visual recheck now that `twr_start` is also corrected back to 2024-10-16.)
 6. **Step E** (market context: RSS + monthly briefing) — the largest remaining chunk, and the only one needing a recurring manual step (the briefing file) alongside the code.
 7. **Step F polish**: dark mode, enforced print pagination, mobile tiles/sticky-column. Lowest priority — the report is fully usable without them.
 8. **§12a Readability punch list (2026-10-07 review, not yet actioned)** — smaller, more numerous UI issues found reading the live report, roughly in the order they'd be noticed:
