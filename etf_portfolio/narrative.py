@@ -35,7 +35,10 @@ def build_summary(k: dict, names: dict[str, str]) -> list[str]:
 
     if k.get("xirr") is not None:
         sentence = f"Seit Start erzielten Sie {_fmt_pct(k['xirr'])} p.a. (XIRR)"
-        if k.get("twr") is not None and k.get("benchmark_twr") is not None and k.get("coverage_implied_share", 1.0) < 0.80:
+        # docs/dev/report-v3-concept.md §1: only compare against the benchmark once
+        # market coverage is at least 80% (implied_share < 0.20) — below that, the
+        # TWR itself is too estimate-driven for a benchmark delta to mean anything.
+        if k.get("twr") is not None and k.get("benchmark_twr") is not None and k.get("coverage_implied_share", 1.0) < 0.20:
             delta_pp = (k["twr"] - k["benchmark_twr"]) * 100
             verb = "vor" if delta_pp >= 0 else "hinter"
             delta_text = f"{abs(delta_pp):.1f}".replace(".", ",")

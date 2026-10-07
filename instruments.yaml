@@ -64,3 +64,45 @@ IE000N7LUK04:
   short: Boreas Solactive Quantum Computing
   ticker: QQCC.DE
   class: ETF
+
+# Historical (fully sold) positions, resolved 2026-10-07 — see
+# docs/dev/isin-ticker-resolution-concept.md. Each confirmed live:
+# Yahoo chart meta currency=EUR, exchangeName=GER (Xetra), matching
+# instrumentType, before trusting it over the implied-price fallback.
+IE00B4L5Y983:
+  short: iShares Core MSCI World
+  ticker: EUNL.DE
+  class: ETF
+
+IE00BFMXXD54:
+  short: Vanguard S&P 500
+  ticker: VUAA.DE
+  class: ETF
+  # Caveat: Yahoo's VUAA.DE history only starts 2024-12-30. This ISIN
+  # was first bought 2024-10-16, so ~2.5 months at the very start of
+  # that span stay unpriced (not implied — §1's "one source per span"
+  # rule means a span with ANY market data doesn't fall back to
+  # implied for days before the ticker's own history begins).
+
+IE00B3WJKG14:
+  short: iShares S&P 500 IT Sector
+  ticker: QDVE.DE
+  class: ETF
+
+IE00BM67HK77:
+  short: Xtrackers MSCI World Health Care
+  ticker: XDWH.DE
+  class: ETF
+
+IE00B5BMR087:
+  short: iShares Core S&P 500
+  ticker: SXR8.DE
+  class: ETF
+
+US67066G1040:
+  short: NVIDIA
+  ticker: NVD.DE
+  class: Aktie
+  # Real US equity, not a fund — its only EUR listing is this
+  # Frankfurt quote. Yahoo's ISIN search also surfaces NVDA (NASDAQ,
+  # USD) first; EUR/GER was picked on purpose, not NVDA.

@@ -299,12 +299,29 @@ not `0.40` — tune as you like). [x] `risk_free` added and wired into Sharpe/So
 
 ## 12. Leftovers (for the next pass)
 
+> **Update 2026-10-07**: item 1 below is done — see `docs/dev/isin-ticker-resolution-concept.md`
+> §1. Six hand-verified tickers for the biggest historical holdings dropped implied price share
+> from 71 % to 14 % (under the 20 % target) without building an automated resolver. The three
+> "gating" bugs that review also found (benchmark-sentence threshold, risk-KPI dampening, TER
+> health check) are fixed too — see that doc's §1.3/§6. A fourth review that day added a larger
+> "Readability" punch list (§12a below), not yet actioned.
+
 In priority order, based on what actually matters once you've seen the v3 report:
 
-1. **Source real tickers for the historical ISINs** (or accept 71 % implied and tune the health-check threshold). This is the only item that materially changes risk-KPI trustworthiness — everything else is secondary to it.
+1. ~~**Source real tickers for the historical ISINs**~~ — **done 2026-10-07**, 71 % → 14 %
+   implied, see `isin-ticker-resolution-concept.md`.
 2. **Fill in `instruments.yaml`'s factsheet fields** (`ter`, `regions`, `sectors`, `currency`, `top_holdings`, `role`) for the 4 held funds — unlocks weighted TER, look-through, overlap, and the core/satellite health check in one go. Still the "30-minute chore" from §6, unchanged.
 3. **Step D** (model portfolios + risk/return scatter) — meaningful comparison context, moderate effort, no blockers.
 4. **Per-instrument income** in the contribution chart — needs `ledger.py` to book `DIVIDEND`/`TAX`/`TAX_VAP` against an ISIN, not just a month. Small, contained ledger change.
-5. **Hero chart**: event markers (deposit ticks / switch dots), direct line-end labels, per-segment "estimated" styling, drawdown-bracket annotation. Cosmetic/UX, no data dependency.
+5. **Hero chart**: event markers (deposit ticks / switch dots), direct line-end labels, per-segment "estimated" styling, drawdown-bracket annotation. Cosmetic/UX, no data dependency. (ATH marker is known to sit near the 2026-06-08 rebalancing day traced in `isin-ticker-resolution-concept.md` §1.4 — worth a visual recheck now that the price feeding it is real, not implied.)
 6. **Step E** (market context: RSS + monthly briefing) — the largest remaining chunk, and the only one needing a recurring manual step (the briefing file) alongside the code.
 7. **Step F polish**: dark mode, enforced print pagination, mobile tiles/sticky-column. Lowest priority — the report is fully usable without them.
+8. **§12a Readability punch list (2026-10-07 review, not yet actioned)** — smaller, more numerous UI issues found reading the live report, roughly in the order they'd be noticed:
+   - Developer-facing text leaking into main sections (doc cross-references like "§5.1/Step D", raw `` `role` fehlt in instruments.yaml `` strings, raw ISIN lists) — move all of it behind Datenqualität / Anhang, replace with one plain-language line in the main sections ("Stammdaten fehlen").
+   - Placeholder n/a cards take disproportionate space: region/sector/currency (3 cards) + overlap (1) + TER (2 tiles), all saying "n/a" — collapse into a single "Look-Through: Stammdaten für 4 Fonds fehlen" line until `instruments.yaml`'s factsheet fields (item 2) are filled.
+   - Asset-class donut shows 100 % ETF — uninformative with one class; hide until `role` (core/satellite) exists.
+   - Position donut paginates its legend ("1/2") for just 4 items — shouldn't paginate below some minimum item count.
+   - Contribution bar labels clipped on the left; sold funds show raw broker names (e.g. "ISHSIII-CORE MSCI WLD DLA") instead of the short names that now exist for several of them after item 1 — widen the left margin and wire in `instruments.yaml`'s `short` field.
+   - Inconsistent formats: dates are ISO (`2026-10-07`) throughout instead of `07.10.2026`; heatmap cells use a decimal point with no `%` (`14.3`) instead of German `14,3 %`.
+   - Goal fan chart: legend overlaps the x-axis labels.
+   - No light/dark toggle in the header — only `prefers-color-scheme` reacts; Step F's dark-mode CSS vars (item 7) would need a manual toggle wired to them regardless.

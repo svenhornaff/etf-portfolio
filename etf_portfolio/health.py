@@ -51,9 +51,10 @@ def _satellite_check(satellite_share: float | None, targets: dict) -> HealthChec
 
 
 def _ter_check(weighted_ter: float | None, max_ter: float) -> HealthCheck:
+    """Green/amber/red against YOUR configured `targets.max_ter`, not a hardcoded value."""
     if weighted_ter is None:
         return HealthCheck("Gewichtete TER", "na", "n/a — Stammdaten fehlen", "`ter` fehlt in instruments.yaml")
-    status = "green" if weighted_ter <= 0.0025 else "amber" if weighted_ter <= max_ter * 1.6 else "red"
+    status = "green" if weighted_ter <= max_ter else "amber" if weighted_ter <= max_ter * 2 else "red"
     return HealthCheck("Gewichtete TER", status, f"{weighted_ter * 100:.2f} %", f"Ziel ≤ {max_ter * 100:.2f} %")
 
 

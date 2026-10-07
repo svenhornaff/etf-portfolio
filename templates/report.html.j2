@@ -71,6 +71,8 @@
   .tile .value { font-size: 22px; font-weight: 700; margin-top: .1rem; }
   .tile .sub { font-size: 12px; color: var(--muted); margin-top: .1rem; }
   .pos { color: var(--pos); } .neg { color: var(--neg); }
+  .kpi-row.estimated-risk .kpi { opacity: .55; filter: saturate(.5); }
+  .kpi-row.estimated-risk .kpi .value { font-weight: 400; }
 
   .health-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: .7rem; margin-top: 1.2rem; }
   @media (max-width: 860px) { .health-strip { grid-template-columns: repeat(2, 1fr); } }
@@ -253,9 +255,9 @@
   <h2 class="section-title">Beitrag <span class="note">— woher kommt Ihr Geld</span></h2>
   <div class="grid-12">
     <div class="col-6 card">
-      <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Ergebnis je Instrument (realisiert + unrealisiert)</h3>
+      <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Realisiertes Ergebnis je Instrument</h3>
       <div id="chart-contribution" class="chart short"></div>
-      <div class="note">Erträge (Dividenden) werden im Ledger nur monatlich, nicht je Instrument verbucht, und sind hier deshalb nicht enthalten — siehe Wasserfall rechts für die Gesamtsicht.</div>
+      <div class="note">Nur realisierte Gewinne/Verluste aus Verkäufen. Unrealisierte Gewinne und Erträge (Dividenden) sind hier nicht enthalten — das Ledger verbucht Erträge nur monatlich, nicht je Instrument; siehe Wasserfall rechts für die Gesamtsicht inkl. unrealisiert.</div>
     </div>
     <div class="col-6 card">
       <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Wasserfall: Einzahlungen → Depotwert</h3>
@@ -270,7 +272,11 @@
 
 <section class="layer" id="risiko">
   <h2 class="section-title">Risiko</h2>
-  <div class="kpi-row">
+  {% set risk_unreliable = kpis.coverage_implied_share >= 0.20 %}
+  {% if risk_unreliable %}
+  <p class="note" style="margin-top:0">⚠ {{ (kpis.coverage_implied_share * 100) | round(0) | int }} % der Kurse sind geschätzt (Markt‐Abdeckung unter 80 %) — die folgenden Kennzahlen sind entsprechend unsicher und deshalb gedämpft dargestellt.</p>
+  {% endif %}
+  <div class="kpi-row {{ 'estimated-risk' if risk_unreliable }}">
     <div class="kpi"><div class="label">Volatilität p.a.</div><div class="value">{{ kpis.volatility | pct if kpis.volatility is not none else "n/a" }}</div>{% if kpis.volatility is none %}<div class="reason">&lt; 120 Tageswerte</div>{% endif %}</div>
     <div class="kpi"><div class="label">Max Drawdown</div><div class="value neg">{{ kpis.max_drawdown | pct if kpis.max_drawdown is not none else "n/a" }}</div></div>
     <div class="kpi"><div class="label">Akt. Drawdown</div><div class="value {{ 'neg' if kpis.current_drawdown and kpis.current_drawdown < 0 }}">{{ kpis.current_drawdown | pct if kpis.current_drawdown is not none else "n/a" }}</div></div>
