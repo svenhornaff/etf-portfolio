@@ -497,3 +497,162 @@ def turnover_12m(sells: list, as_of: date, avg_value: Decimal | None) -> float |
     cutoff = as_of - timedelta(days=365)
     proceeds = sum((s.proceeds for s in sells if s.date > cutoff), Decimal(0))
     return float(proceeds / avg_value)
+
+
+# --- docs/dev/report-v3-concept.md §9 risk KPI additions ------------------
+
+
+def drawdown_series(index_series: list[tuple[date, float]]) -> list[tuple[date, float]]:
+    """Underwater chart series: value vs. its running peak, every day, as a %."""
+    out = []
+    peak = None
+    for d, v in index_series:
+        peak = v if peak is None else max(peak, v)
+        out.append((d, (v / peak - 1.0) if peak else 0.0))
+    return out
+
+
+def drawdown_durations(index_series: list[tuple[date, float]]) -> tuple[int | None, int | None]:
+    """max_duration_days, current_duration_days (0 if currently at a new high)."""
+    if not index_series:
+        return None, None
+    peak_day = index_series[0][0]
+    peak_val = index_series[0][1]
+    max_dur = 0
+    for d, v in index_series:
+        if v >= peak_val:
+            peak_val, peak_day = v, d
+        else:
+            max_dur = max(max_dur, (d - peak_day).days)
+    current_dur = (index_series[-1][0] - peak_day).days
+    return max_dur, current_dur
+
+
+def downside_deviation_annualized(index_series: list[tuple[date, float]], min_obs: int = 120) -> float | None:
+    """Annualized stdev of only the negative daily returns (MAR = 0)."""
+    rets = daily_returns(index_series)
+    if len(rets) < min_obs:
+        return None
+    downside = [r for r in rets if r < 0]
+    if not downside:
+        return 0.0
+    mean_sq = sum(r * r for r in downside) / len(rets)  # denominator is ALL days, not just down days
+    return (mean_sq ** 0.5) * (252 ** 0.5)
+
+
+def sharpe_ratio(twr_pa: float | None, vol_pa: float | None, risk_free: float) -> float | None:
+    if twr_pa is None or vol_pa is None or vol_pa == 0:
+        return None
+    return (twr_pa - risk_free) / vol_pa
+
+
+def sortino_ratio(twr_pa: float | None, downside_pa: float | None, risk_free: float) -> float | None:
+    if twr_pa is None or downside_pa is None or downside_pa == 0:
+        return None
+    return (twr_pa - risk_free) / downside_pa
+
+
+def beta_and_correlation(
+    index_series: list[tuple[date, float]],
+    benchmark_closes: dict[date, Decimal],
+    min_obs: int = 60,
+) -> tuple[float | None, float | None]:
+    """Portfolio TWR-return beta/correlation vs. the benchmark's own price return.
+
+    Paired daily returns, aligned by date (benchmark via close_on_or_before
+    carry-forward, same convention as everywhere else). None below
+    `min_obs` pairs — a beta from a handful of days is noise, not a number.
+    """
+    port_rets = []
+    bench_rets = []
+    prev_b = None
+    for (d0, v0), (d1, v1) in zip(index_series, index_series[1:], strict=False):
+        if not v0:
+            continue
+        hit0 = close_on_or_before(benchmark_closes, d0)
+        hit1 = close_on_or_before(benchmark_closes, d1)
+        if not (hit0 and hit1) or hit0[0] == 0:
+            continue
+        port_rets.append(v1 / v0 - 1.0)
+        bench_rets.append(float(hit1[0] / hit0[0]) - 1.0)
+        prev_b = hit1
+    if len(port_rets) < min_obs or prev_b is None:
+        return None, None
+    var_b = statistics.pvariance(bench_rets)
+    if var_b == 0:
+        return None, None
+    mean_p, mean_b = statistics.fmean(port_rets), statistics.fmean(bench_rets)
+    cov = sum((p - mean_p) * (b - mean_b) for p, b in zip(port_rets, bench_rets, strict=False)) / len(port_rets)
+    beta = cov / var_b
+    sd_p = statistics.pstdev(port_rets)
+    sd_b = statistics.pstdev(bench_rets)
+    corr = cov / (sd_p * sd_b) if sd_p and sd_b else None
+    return beta, corr
+
+
+def unusual_jumps(
+    index_series: list[tuple[date, float]],
+    benchmark_closes: dict[date, Decimal] | None,
+    threshold: float = 0.05,
+) -> list[dict]:
+    """docs/dev/report-v3-concept.md §11: single-day jumps the benchmark doesn't share.
+
+    Not a "this is a bug" flag — a concentrated thematic portfolio can
+    legitimately move more than a diversified index in a day. This is a
+    disclosure (shown in Datenqualität), not an error.
+    """
+    out = []
+    for (d0, v0), (d1, v1) in zip(index_series, index_series[1:], strict=False):
+        if not v0:
+            continue
+        port_ret = v1 / v0 - 1.0
+        if abs(port_ret) < threshold:
+            continue
+        bench_ret = None
+        if benchmark_closes:
+            hit0 = close_on_or_before(benchmark_closes, d0)
+            hit1 = close_on_or_before(benchmark_closes, d1)
+            if hit0 and hit1 and hit0[0] != 0:
+                bench_ret = float(hit1[0] / hit0[0]) - 1.0
+        if bench_ret is None or abs(port_ret - bench_ret) >= threshold:
+            out.append({"date": d1, "portfolio_ret": port_ret, "benchmark_ret": bench_ret})
+    return out
+
+
+def income_yield(dividends_annualized: Decimal, value: Decimal | None) -> float | None:
+    """Trailing dividend yield on current value — None if value is unavailable."""
+    if not value:
+        return None
+    return float(dividends_annualized / value)
+
+
+def rolling_return(index_series: list[tuple[date, float]], as_of: date, days: int = 365) -> float | None:
+    """Rolling N-day return ending at as_of; None if coverage doesn't reach back that far."""
+    if not index_series:
+        return None
+    cutoff = as_of - timedelta(days=days)
+    if index_series[0][0] > cutoff:
+        return None
+    base = twr_index_on(index_series, cutoff)
+    latest = twr_index_on(index_series, as_of)
+    if not base or not latest:
+        return None
+    return latest / base - 1.0
+
+
+def annual_returns(index_series: list[tuple[date, float]]) -> list[dict]:
+    """Calendar-year returns, each possibly partial (same convention as monthly_returns)."""
+    months = monthly_returns(index_series)
+    by_year: dict[str, list[dict]] = {}
+    for m in months:
+        by_year.setdefault(m["month"][:4], []).append(m)
+    out = []
+    for year, ms in sorted(by_year.items()):
+        # chain the monthly returns within the year
+        compounded = 1.0
+        for m in ms:
+            compounded *= 1.0 + m["ret"]
+        is_current_year = date.today().year == int(year) and date.today().month < 12
+        partial = (any(m["partial"] for m in ms) and len(ms) < 12) or is_current_year
+        out.append({"year": year, "ret": compounded - 1.0, "partial": partial})
+    return out

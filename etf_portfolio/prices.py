@@ -222,12 +222,17 @@ def resolve_closes(
 ) -> tuple[dict[str, PriceSeries], list[str]]:
     """Resolve a full daily PriceSeries for every ISIN that was ever held.
 
-    Market data (Yahoo, cache-first) is fetched for every ISIN that has a
-    configured ticker, over its own holding window only (§2.4). ISINs
-    without a ticker — or days a ticker's data doesn't cover — fall back to
-    §2.3's implied price from the ISIN's own trade amounts, inside its
-    holding period only. Days with neither are left unpriced; callers must
-    treat that as "missing", never as zero.
+    docs/dev/report-v3-concept.md §1: one source per holding *span*, never
+    mixed. For each span independently: if the configured ticker produced
+    any real market data overlapping that span, the whole span is priced
+    from the market (carry-forward across weekends/holidays as usual; a
+    day the market feed genuinely has no quote for stays unpriced, it is
+    NOT patched with an implied price). Otherwise the whole span is priced
+    from §2.3's implied price — derived from the ISIN's own trade amounts
+    — end to end. A re-buy after fully selling out is a new span and may
+    independently pick a different source (e.g. a ticker only listed
+    later). Days with neither are left unpriced; callers must treat that
+    as "missing", never as zero.
     """
     start_by_isin: dict[str, date] = {}
     end_by_isin: dict[str, date] = {}
@@ -249,25 +254,37 @@ def resolve_closes(
         market = market_closes.get(isin, {})
         points = sorted(trade_points_by_isin.get(isin, []))
         has_ticker = bool((instruments.get(isin) or {}).get("ticker"))
-        implied_used = False
+        any_implied_span = False
+        any_market_span = False
         for span_start, span_end in spans:
-            day = span_start
             last_day = span_end or as_of
-            while day <= last_day:
-                if day in market:
-                    series.closes[day] = market[day]
-                    series.source[day] = "market"
-                else:
+            # Decide the source for this *entire* span up front, from
+            # whether the market feed has anything at all inside it —
+            # not per day, which is exactly the mixing bug this fixes.
+            span_has_market = any(span_start <= d <= last_day for d in market)
+            day = span_start
+            if span_has_market:
+                any_market_span = True
+                while day <= last_day:
+                    hit = close_on_or_before(market, day)
+                    if hit is not None:
+                        series.closes[day] = hit[0]
+                        series.source[day] = "market"
+                    day += timedelta(days=1)
+            else:
+                any_implied_span = True
+                while day <= last_day:
                     implied = _implied_price_on(points, day)
                     if implied is not None:
                         series.closes[day] = implied
                         series.source[day] = "implied"
-                        implied_used = True
-                day += timedelta(days=1)
+                    day += timedelta(days=1)
         series_by_isin[isin] = series
-        if implied_used and not has_ticker:
+        if any_implied_span and not has_ticker:
             warnings.append(f"{isin}: no ticker configured — using implied prices from trade amounts (≈)")
-        elif implied_used:
-            warnings.append(f"{isin}: market data incomplete — gaps filled with implied prices (≈)")
+        elif any_implied_span:
+            warnings.append(f"{isin}: no market data for one or more holding periods — using implied prices for those periods (≈)")
+        if any_implied_span and any_market_span:
+            warnings.append(f"{isin}: different holding periods use different price sources (see Kursabdeckung)")
 
     return series_by_isin, warnings

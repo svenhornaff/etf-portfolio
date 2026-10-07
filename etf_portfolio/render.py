@@ -15,6 +15,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 # etf_portfolio/render.py -> package dir's parent is the repo root, where
 # templates/ lives (flat layout, see README.md).
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
+ECHARTS_PATH = TEMPLATE_DIR / "static" / "echarts.min.js"
 
 
 def fmt_eur(amount: Decimal | float | None, show_sign: bool = False) -> str:
@@ -41,6 +42,15 @@ def fmt_qty(qty: Decimal | None) -> str:
     s = f"{qty.normalize():f}"
     if "." in s:
         s = s.rstrip("0").rstrip(".")
+    return s.replace(".", ",")
+
+
+def fmt_de_num(value: float | None, decimals: int = 2, show_sign: bool = False) -> str:
+    """Plain (non-percent, non-currency) German-formatted number, e.g. for Sharpe/beta/pp deltas."""
+    if value is None:
+        return "n/a"
+    sign = "+" if show_sign and value > 0 else ""
+    s = f"{sign}{value:.{decimals}f}"
     return s.replace(".", ",")
 
 
@@ -81,12 +91,29 @@ def build_env() -> Environment:
     env.filters["pct"] = fmt_pct
     env.filters["qty"] = fmt_qty
     env.filters["heatcolor"] = fmt_heatcolor
+    env.filters["de_num"] = fmt_de_num
     return env
+
+
+def load_vendored_echarts() -> str:
+    """Read the vendored, offline ECharts build for inline embedding.
+
+    docs/dev/report-v3-concept.md §8/§9: one chart library, vendored, no
+    CDN, no <script src> — the report must make zero network requests
+    when opened. `</script` is defensively escaped the same way to_safe_json
+    escapes JSON, even though minified JS is very unlikely to contain it.
+    """
+    if not ECHARTS_PATH.exists():
+        raise FileNotFoundError(
+            f"{ECHARTS_PATH} missing — vendor Apache ECharts there (see docs/dev/report-v3-concept.md §8)"
+        )
+    return ECHARTS_PATH.read_text(encoding="utf-8").replace("</script", "<\\/script")
 
 
 def render_report(ctx: dict, out_path: Path) -> None:
     ctx = dict(ctx)
     ctx["data_json"] = to_safe_json(ctx.get("chart_data", {}))
+    ctx["echarts_js"] = load_vendored_echarts()
     ctx.setdefault("goal", {})
     env = build_env()
     template = env.get_template("report.html.j2")

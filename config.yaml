@@ -5,23 +5,26 @@ benchmark:
   isin: IE00BK5BQT80          # verify; or MSCI World IE00B4L5Y983
   ticker: VWCE.DE             # verify listing before relying on it
 
-# Optional per ISIN: ticker (Yahoo Finance symbol), short (display name),
-# class (drives the asset-class donut; unset -> shown as "Nicht zugeordnet").
-# No ticker is fine: docs/dev/refactor-concept.md §2.3 derives an "implied"
-# price from the ISIN's own buy/sell amounts for any ISIN ever held — you
-# do NOT need to source a real ticker for old, fully-sold-out positions.
-# `uv run etf-portfolio --list-instruments` lists every ISIN ever traded
-# plus its current ticker/class/coverage status.
-# Verified live against the Yahoo Finance chart API (2026-10-05).
-instruments:
-  IE000I8KRLL9:
-    {ticker: "SEC0.DE", short: "iShares MSCI Global Semiconductors", class: ETF}
-  FR001400YYJ0:
-    {ticker: "FINZ.DE", short: "finanzen.net MSCI World", class: ETF}
-  IE00BF4RFH31:
-    {ticker: "IUSN.DE", short: "iShares MSCI World Small Cap", class: ETF}
-  IE000N7LUK04:
-    {ticker: "QQCC.DE", short: "Boreas Solactive Quantum Computing", class: ETF}
+# Instrument reference data (ticker/short/class/TER/region/sector/...)
+# moved to instruments.yaml — docs/dev/report-v3-concept.md §6. This file
+# stays settings-only: how the report is built, not what each fund is.
+
+# docs/dev/report-v3-concept.md §3 health-check traffic lights. All
+# thresholds are yours to tune; the report never recommends trades, only
+# shows the deviation against these targets.
+targets:
+  allocation: {core: 0.70, satellite: 0.30}
+  band_pp: 5
+  max_position: 0.35
+  max_ter: 0.0025
+  target_wealth_10y: 150000
+
+# For Sharpe/Sortino — a fixed proxy since there's no live €STR feed here.
+# 2 % reflects short-term EUR money-market yields over the 2024-2026
+# period this report covers; revisit if that regime changes.
+risk_free:
+  source: fixed
+  rate: 0.02
 
 goal:
   monthly_saving: 700

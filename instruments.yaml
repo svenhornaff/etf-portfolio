@@ -1,0 +1,66 @@
+# Reference data, not settings — docs/dev/report-v3-concept.md §6.
+#
+# Moved out of config.yaml because this is "what is this ISIN" (factsheet
+# data), not "how do I want my report built". Keyed by ISIN.
+#
+# Required for any valuation/report use: nothing (an ISIN missing here
+# falls back to its name from the CSV, no ticker -> implied pricing, and
+# "Nicht zugeordnet" for asset class).
+#
+# ticker:   Yahoo Finance symbol. Omit for sold-out historical positions
+#           you don't want to track — resolve_closes() derives an
+#           "implied" price from the ISIN's own trade amounts instead.
+# short:    display name used throughout the report instead of the raw
+#           broker text.
+# class:    drives the asset-class donut (ETF / Krypto / ...). Omit ->
+#           shown as "Nicht zugeordnet".
+# role:     core | satellite — for the health-check allocation band. Not
+#           set below: filling this in requires a considered decision
+#           per fund, not a lookup, so it's left for you to do by hand.
+# ter, regions, sectors, currency, top_holdings, as_of, source:
+#           per docs/dev/report-v3-concept.md §6 schema, for weighted-TER
+#           and region/sector/currency/overlap look-through. NOT filled
+#           in here — sourcing this from each fund's factsheet is a
+#           manual chore (the concept doc itself calls it "a 30-minute
+#           chore for 4 funds"), and this session won't fabricate
+#           numbers for it. Until these are present, the report renders
+#           "n/a — Stammdaten fehlen" for weighted TER, region/sector/
+#           currency look-through, and the overlap matrix, for every
+#           instrument. See etf_portfolio/lookthrough.py.
+#
+# Example of what a *complete* entry looks like, once you've pulled it
+# from the factsheet (not live data below, just the shape):
+#
+# FR001400YYJ0:
+#   short: finanzen.net MSCI World
+#   ticker: FINZ.DE
+#   class: ETF
+#   role: core
+#   ter: 0.0005
+#   replication: physical
+#   regions:  {US: 0.72, JP: 0.05, GB: 0.04, other: 0.19}
+#   sectors:  {IT: 0.27, Fin: 0.16, HC: 0.10, other: 0.47}
+#   currency: {USD: 0.73, EUR: 0.08, JPY: 0.05, other: 0.14}
+#   top_holdings: {NVIDIA: 0.05, Apple: 0.045, Microsoft: 0.04}
+#   as_of: 2026-09-30
+#   source: <factsheet URL>
+
+IE000I8KRLL9:
+  short: iShares MSCI Global Semiconductors
+  ticker: SEC0.DE
+  class: ETF
+
+FR001400YYJ0:
+  short: finanzen.net MSCI World
+  ticker: FINZ.DE
+  class: ETF
+
+IE00BF4RFH31:
+  short: iShares MSCI World Small Cap
+  ticker: IUSN.DE
+  class: ETF
+
+IE000N7LUK04:
+  short: Boreas Solactive Quantum Computing
+  ticker: QQCC.DE
+  class: ETF

@@ -20,8 +20,9 @@ from pathlib import Path
 
 import yaml
 
-from etf_portfolio import kpi
+from etf_portfolio import kpi, lookthrough
 from etf_portfolio.classify import apply_overrides, classify, redact
+from etf_portfolio.health import compute_health_checks
 from etf_portfolio.ledger import build_ledger, holding_periods
 from etf_portfolio.load import (
     HeaderMismatchError,
@@ -29,6 +30,7 @@ from etf_portfolio.load import (
     load_rows,
     summarize,
 )
+from etf_portfolio.narrative import build_summary
 from etf_portfolio.prices import load_cache, resolve_closes
 from etf_portfolio.render import render_report
 
@@ -102,6 +104,7 @@ def build_ctx(
     months: list[dict] = []
     best_month = worst_month = None
     benchmark_twr_value = None
+    twr_idx: list[tuple[date, float]] = []
     value_series: list[tuple[str, float]] | None = None
     benchmark_series: list[tuple[str, float]] | None = None
 
@@ -147,6 +150,47 @@ def build_ctx(
                 for d, v in kpi.benchmark_wealth_series(seeded_flows, bench_closes, coverage.start, valuation_date)
             ]
 
+    # --- docs/dev/report-v3-concept.md §9 risk/performance additions -------
+    underwater_series: list[tuple[str, float]] | None = None
+    benchmark_underwater_series: list[tuple[str, float]] | None = None
+    dd_max_days = dd_current_days = None
+    downside_vol_value = sharpe_value = sortino_value = None
+    beta_value = corr_value = None
+    rolling_1y_value = None
+    annual_rets: list[dict] = []
+    annual_rets_bench: list[dict] = []
+    months_bench: list[dict] = []
+    unusual_jumps: list[dict] = []
+    risk_free_rate = (cfg.get("risk_free", {}) or {}).get("rate", 0.0)
+
+    if coverage and twr_idx:
+        underwater_series = [(d.isoformat(), v) for d, v in kpi.drawdown_series(twr_idx)]
+        dd_max_days, dd_current_days = kpi.drawdown_durations(twr_idx)
+        downside_vol_value = kpi.downside_deviation_annualized(twr_idx)
+        sharpe_value = kpi.sharpe_ratio(twr_pa_value, vol_value, risk_free_rate)
+        sortino_value = kpi.sortino_ratio(twr_pa_value, downside_vol_value, risk_free_rate)
+        rolling_1y_value = kpi.rolling_return(twr_idx, valuation_date)
+        annual_rets = kpi.annual_returns(twr_idx)
+        unusual_jumps = kpi.unusual_jumps(twr_idx, bench_closes)
+        if bench_closes:
+            beta_value, corr_value = kpi.beta_and_correlation(twr_idx, bench_closes)
+            # benchmark's own raw price index (no cashflows) over the same
+            # window, for the annual-bars/underwater comparisons — distinct
+            # from benchmark_series above, which is wealth-with-cashflows.
+            from etf_portfolio.prices import close_on_or_before as _cob
+
+            base_hit = _cob(bench_closes, coverage.start)
+            if base_hit and base_hit[0]:
+                bench_idx = []
+                for d, _v in twr_idx:
+                    hit = _cob(bench_closes, d)
+                    if hit:
+                        bench_idx.append((d, float(hit[0] / base_hit[0])))
+                if bench_idx:
+                    annual_rets_bench = kpi.annual_returns(bench_idx)
+                    months_bench = kpi.monthly_returns(bench_idx)
+                    benchmark_underwater_series = [(d.isoformat(), v) for d, v in kpi.drawdown_series(bench_idx)]
+
     holdings = []
     instruments_cfg = cfg.get("instruments", {}) or {}
     for isin, pos in sorted(ledger.positions_now.items(), key=lambda kv: kv[1].name or kv[0]):
@@ -183,6 +227,53 @@ def build_ctx(
     top3 = kpi.top_n_share(weights, 3) if weights else None
     ever_traded = len({isin for _, isin, _ in ledger.qty_history})
     turnover = kpi.turnover_12m(ledger.sells, valuation_date, value_kpi or valuation.priced_value or None)
+
+    # --- docs/dev/report-v3-concept.md §6/§9: look-through, health, narrative
+    holdings_values = {h["isin"]: h["value"] for h in holdings if h["value"] is not None}
+    weighted_ter_pct, weighted_ter_eur, ter_reason = lookthrough.weighted_ter(holdings_values, instruments_cfg)
+    satellite_share_value = lookthrough.satellite_share(weights, instruments_cfg)
+    region_lt = lookthrough.lookthrough(weights, instruments_cfg, "regions")
+    sector_lt = lookthrough.lookthrough(weights, instruments_cfg, "sectors")
+    currency_lt = lookthrough.lookthrough(weights, instruments_cfg, "currency")
+    overlap_pairs, overlap_reason = lookthrough.overlap_matrix(weights, instruments_cfg)
+
+    unresolved_dq_count = sum(1 for e in events if e.kind == "UNKNOWN") + sum(1 for i in ledger.dq if i.severity == "error")
+    health_checks = compute_health_checks(
+        largest,
+        {h["isin"]: (instruments_cfg.get(h["isin"], {}) or {}).get("short") or h["name"] for h in holdings},
+        top3,
+        satellite_share_value,
+        float(weighted_ter_pct) if weighted_ter_pct is not None else None,
+        akt_dd_value,
+        coverage.implied_share if coverage else 1.0,
+        unresolved_dq_count,
+        cfg.get("targets", {}),
+    )
+
+    # Waterfall bridge, §3: Einzahlungen -> +realisiert -> +unrealisiert ->
+    # +Erträge -> -Steuern -> Depotwert. unrealized is only meaningful if
+    # every current holding is priced; otherwise the bridge is n/a, not a
+    # guess built on a partial sum.
+    unrealized_total = sum((h["unrealized"] for h in holdings if h["unrealized"] is not None), Decimal(0)) if value_kpi is not None else None
+    waterfall = None
+    if value_kpi is not None and unrealized_total is not None:
+        steps = [
+            ("Einzahlungen", net_contrib),
+            ("Realisiert", realized),
+            ("Unrealisiert", unrealized_total),
+            ("Erträge", dividends),
+            ("Steuern", taxes),
+        ]
+        running = Decimal(0)
+        bars = []
+        for label, delta in steps:
+            bars.append({"label": label, "start": float(running), "delta": float(delta)})
+            running += delta
+        residual = value_kpi - running
+        if abs(residual) > Decimal("1"):
+            bars.append({"label": "Rest (Cash-Timing/Rundung)", "start": float(running), "delta": float(residual)})
+            running += residual
+        waterfall = {"bars": bars, "total": float(running)}
 
     savings_by_month: dict[str, Decimal] = {}
     for d, amt in ledger.flows:
@@ -290,7 +381,88 @@ def build_ctx(
             "value": value_series,
             "benchmark_name": benchmark_cfg.get("name"),
         },
+        "underwater": underwater_series,
+        "benchmark_underwater": benchmark_underwater_series,
+        "annual_returns": annual_rets,
+        "annual_returns_benchmark": annual_rets_bench,
+        "monthly_returns_benchmark": months_bench,
+        "start_value": float(value_kpi) if value_kpi is not None else 0.0,
+        "target_wealth_10y": (cfg.get("targets", {}) or {}).get("target_wealth_10y"),
+        "waterfall": waterfall,
+        "region_lt": region_lt.breakdown if region_lt.available else None,
+        "sector_lt": sector_lt.breakdown if sector_lt.available else None,
+        "currency_lt": currency_lt.breakdown if currency_lt.available else None,
     }
+
+    for jump in unusual_jumps:
+        bench_text = f"{jump['benchmark_ret']:+.1%}" if jump["benchmark_ret"] is not None else "n/a"
+        dq_items.append(
+            {
+                "severity": "info",
+                "message": (
+                    f"{jump['date'].isoformat()}: Depotwert-Tagesrendite {jump['portfolio_ret']:+.1%} "
+                    f"(Benchmark {bench_text}) — ungewöhnlicher Ausschlag, nicht notwendigerweise ein Fehler "
+                    "(konzentriertes Themen-Depot kann stärker schwanken als der Index)"
+                ),
+            }
+        )
+
+    kpis = {
+        "net_contributions": net_contrib,
+        "invested": invested,
+        "realized": realized,
+        "taxes": taxes,
+        "dividends": dividends,
+        "value": value_kpi,
+        "value_reason": valuation.reason,
+        "value_estimated": bool(valuation.estimated),
+        "gain_eur": gain_eur,
+        "xirr": xirr_value,
+        "twr": twr_value,
+        "twr_pa": twr_pa_value,
+        "twr_ytd": twr_ytd_value,
+        "twr_start": coverage.start if coverage else None,
+        "coverage_estimated": coverage.estimated if coverage else False,
+        "coverage_implied_share": coverage.implied_share if coverage else 0.0,
+        "coverage_unpriced": coverage.unpriced_isins if coverage else [],
+        "max_drawdown": mdd_value,
+        "current_drawdown": akt_dd_value,
+        "volatility": vol_value,
+        "benchmark_twr": benchmark_twr_value,
+        "largest_position": largest,
+        "top3_share": top3,
+        "drawdown_duration_max_days": dd_max_days,
+        "drawdown_duration_current_days": dd_current_days,
+        "downside_volatility": downside_vol_value,
+        "sharpe": sharpe_value,
+        "sortino": sortino_value,
+        "beta": beta_value,
+        "correlation": corr_value,
+        "rolling_1y": rolling_1y_value,
+        "risk_free_rate": risk_free_rate,
+        "weighted_ter": weighted_ter_pct,
+        "weighted_ter_eur": weighted_ter_eur,
+        "ter_reason": ter_reason,
+        "satellite_share": satellite_share_value,
+        "instruments_held": len(ledger.positions_now),
+        "instruments_ever": ever_traded,
+        "turnover_12m": turnover,
+        "best_month": best_month,
+        "worst_month": worst_month,
+    }
+
+    summary_sentences = build_summary(kpis, chart_data["holdings_names"])
+
+    unresolved_for_dot = sum(1 for e in events if e.kind == "UNKNOWN") + sum(1 for i in ledger.dq if i.severity == "error")
+    implied_share_for_dot = coverage.implied_share if coverage else 1.0
+    if unresolved_for_dot > 0:
+        dq_dot_color, dq_dot_title = "red", f"{unresolved_for_dot} ungelöste Buchung(en)"
+    elif implied_share_for_dot < 0.20:
+        dq_dot_color, dq_dot_title = "green", f"{implied_share_for_dot:.0%} der Kurse geschätzt"
+    elif implied_share_for_dot < 0.50:
+        dq_dot_color, dq_dot_title = "amber", f"{implied_share_for_dot:.0%} der Kurse geschätzt"
+    else:
+        dq_dot_color, dq_dot_title = "red", f"{implied_share_for_dot:.0%} der Kurse geschätzt"
 
     return {
         "booking_as_of": booking_as_of,
@@ -298,36 +470,17 @@ def build_ctx(
         "booking_date_range": summarize(rows),
         "source_file": source_file.name,
         "parser_version": "1.0",
-        "kpis": {
-            "net_contributions": net_contrib,
-            "invested": invested,
-            "realized": realized,
-            "taxes": taxes,
-            "dividends": dividends,
-            "value": value_kpi,
-            "value_reason": valuation.reason,
-            "value_estimated": bool(valuation.estimated),
-            "gain_eur": gain_eur,
-            "xirr": xirr_value,
-            "twr": twr_value,
-            "twr_pa": twr_pa_value,
-            "twr_ytd": twr_ytd_value,
-            "twr_start": coverage.start if coverage else None,
-            "coverage_estimated": coverage.estimated if coverage else False,
-            "coverage_implied_share": coverage.implied_share if coverage else 0.0,
-            "coverage_unpriced": coverage.unpriced_isins if coverage else [],
-            "max_drawdown": mdd_value,
-            "current_drawdown": akt_dd_value,
-            "volatility": vol_value,
-            "benchmark_twr": benchmark_twr_value,
-            "largest_position": largest,
-            "top3_share": top3,
-            "instruments_held": len(ledger.positions_now),
-            "instruments_ever": ever_traded,
-            "turnover_12m": turnover,
-            "best_month": best_month,
-            "worst_month": worst_month,
-        },
+        "dq_dot_color": dq_dot_color,
+        "dq_dot_title": dq_dot_title,
+        "kpis": kpis,
+        "health_checks": health_checks,
+        "summary_sentences": summary_sentences,
+        "waterfall": waterfall,
+        "overlap_pairs": overlap_pairs,
+        "overlap_reason": overlap_reason,
+        "region_lt": region_lt,
+        "sector_lt": sector_lt,
+        "currency_lt": currency_lt,
         "holdings": holdings,
         "sells": sorted(ledger.sells, key=lambda s: s.date, reverse=True),
         "realized_by_isin": {isin: amt for isin, amt in ledger.realized.items() if amt != 0},
@@ -420,6 +573,7 @@ def main(argv: list[str] | None = None) -> int:
     cache_path = ROOT / "cache" / "prices.json"
     out_dir = ROOT / "out"
     config_path = ROOT / "config.yaml"
+    instruments_path = ROOT / "instruments.yaml"
 
     try:
         csv_path = args.file or find_latest_csv(data_dir)
@@ -436,6 +590,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"file: {csv_path.name}  ({summarize(rows)})")
 
     cfg = load_config(config_path)
+    # instruments.yaml is reference data (docs/dev/report-v3-concept.md §6),
+    # kept separate from config.yaml's settings but merged in here so the
+    # rest of the code can keep reading cfg["instruments"] as before.
+    cfg["instruments"] = load_config(instruments_path)
     events = classify(rows)
     events = apply_overrides(events, cfg.get("overrides", []))
 

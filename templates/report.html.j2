@@ -1,779 +1,491 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Portfolio-Bericht — {{ valuation_date.isoformat() }}</title>
+<title>ETF-Portfolio-Bericht — {{ valuation_date.isoformat() }}</title>
+<script>{{ echarts_js | safe }}</script>
 <style>
-:root {
-  --bg: #eef1f7; --fg: #1a1f36; --card: #ffffff; --muted: #70778c;
-  --border: #e4e8f1; --accent: #3b7ddd; --accent-soft: #eaf1fc;
-  --pos: #1a9c57; --neg: #e5484d; --shadow: 0 1px 2px rgba(16,24,40,.04), 0 6px 16px rgba(16,24,40,.05);
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0; background: var(--bg); color: var(--fg);
-  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-}
-header { padding: 1.3rem 1.5rem; display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; align-items: baseline; max-width: 1180px; margin: 0 auto; }
-header h1 { font-size: 1.25rem; margin: 0; font-weight: 700; }
-header .meta { color: var(--muted); font-size: .82rem; min-width: 0; overflow-wrap: break-word; }
-body { overflow-x: hidden; }
-main { max-width: 1180px; margin: 0 auto; padding: 0 1.25rem 2rem; }
-section { margin-bottom: 1.75rem; }
-h2.section-title { font-size: 1.15rem; font-weight: 700; margin: 0 0 .9rem; color: var(--fg); }
-h2.section-title .note { font-weight: 400; font-size: .8rem; }
-h3 { font-size: .95rem; font-weight: 700; margin: 0 0 .7rem; }
-.card { background: var(--card); border-radius: 16px; padding: 1.3rem 1.4rem; box-shadow: var(--shadow); min-width: 0; }
-/* grid/flex children default to min-width:auto (their content's natural
-   width), which silently overflows the viewport on narrow screens —
-   override everywhere a table/long-text child could force that. */
-.dash-row > *, .dash-row-3 > *, .cards > * { min-width: 0; }
-.hero-head > div { min-width: 0; }
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --ink: #1a1f2b;
+    --muted: #6b7280;
+    --border: #e4e6ea;
+    --accent: #2457c5;
+    --accent-soft: #e8edfb;
+    --pos: #1a8a52;
+    --neg: #c23b3b;
+    --amber: #b5790a;
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    /* docs/dev/report-v3-concept.md Step F (dark mode) is deferred this pass;
+       vars are here so a future pass only has to fill them in. */
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 15px;
+    line-height: 1.45;
+  }
+  .amt, .num { font-variant-numeric: tabular-nums; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 1.2rem 1.4rem 4rem; }
+  .hidden-amounts .amt { filter: blur(5px); user-select: none; }
 
-/* dashboard grid */
-.dash-row { display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; margin-bottom: 1rem; }
-.dash-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
-@media (max-width: 920px) { .dash-row, .dash-row-3 { grid-template-columns: 1fr; } }
-@media (max-width: 640px) { header { flex-direction: column; align-items: flex-start; } }
+  header.band {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+    flex-wrap: wrap; padding: 1rem 0 .6rem;
+  }
+  header.band h1 { font-size: 20px; margin: 0; }
+  header.band .sub { color: var(--muted); font-size: 13px; }
+  .dq-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: .3rem; }
+  .dq-dot.green { background: var(--pos); } .dq-dot.amber { background: var(--amber); } .dq-dot.red { background: var(--neg); }
+  .toggles button { background: none; border: 1px solid var(--border); border-radius: 8px; padding: .35rem .7rem;
+    font-size: 13px; color: var(--accent); cursor: pointer; margin-left: .4rem; }
 
-.hero-head { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: .5rem; margin-bottom: .5rem; }
-.hero-label { color: var(--muted); font-size: .85rem; }
-.hero-value { font-size: 2rem; font-weight: 700; }
-.range-tabs, .mini-tabs { display: flex; gap: 1rem; }
-.range-tabs button, .mini-tabs button {
-  background: none; border: none; color: var(--muted); font-size: .85rem; font-weight: 600;
-  padding: .2rem 0; cursor: pointer; border-bottom: 2px solid transparent;
-}
-.range-tabs button.active, .mini-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
-.chart-wealth { position: relative; }
-.chart-tooltip {
-  position: absolute; pointer-events: none; background: #1a1f36; color: #fff; font-size: .78rem;
-  padding: .45rem .6rem; border-radius: 8px; line-height: 1.4; white-space: nowrap; transform: translate(-50%, -115%);
-  opacity: 0; transition: opacity .08s; z-index: 5;
-}
-.chart-tooltip.show { opacity: 1; }
-.legend { display: flex; gap: 1.1rem; flex-wrap: wrap; margin-top: .8rem; font-size: .8rem; }
-.legend .item { display: flex; align-items: center; gap: .4rem; cursor: pointer; color: var(--fg); user-select: none; }
-.legend .item.off { opacity: .4; }
-.legend .swatch { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+  nav.jump { position: sticky; top: 0; background: var(--bg); z-index: 20; display: flex; gap: 1rem;
+    padding: .5rem 0; border-bottom: 1px solid var(--border); margin-bottom: 1.2rem; font-size: 13px;
+    overflow-x: auto; white-space: nowrap; }
+  nav.jump a { color: var(--muted); text-decoration: none; }
+  nav.jump a:hover { color: var(--accent); }
 
-.stat-list .row { display: flex; justify-content: space-between; padding: .55rem 0; border-bottom: 1px solid var(--border); font-size: .9rem; }
-.stat-list .row:last-child { border-bottom: none; }
-.stat-list .row span.k { color: var(--muted); }
-.stat-list .row strong { font-weight: 700; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem 1.2rem; }
+  .grid-12 { display: grid; grid-template-columns: repeat(12, 1fr); gap: 1rem; }
+  .col-4 { grid-column: span 4; } .col-8 { grid-column: span 8; } .col-6 { grid-column: span 6; } .col-12 { grid-column: span 12; }
+  .col-5 { grid-column: span 5; } .col-7 { grid-column: span 7; }
+  @media (max-width: 860px) { .col-4, .col-5, .col-6, .col-7, .col-8 { grid-column: span 12; } }
 
-.mini-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
-.mini-table td { padding: .5rem 0; border-bottom: 1px solid var(--border); }
-.mini-table tr:last-child td { border-bottom: none; font-weight: 700; }
-.mini-table td.num { text-align: right; width: 3.2rem; }
-.mini-table td.buy { text-align: right; width: 3.2rem; color: var(--pos); }
-.mini-table td.sell { text-align: right; width: 3.2rem; color: var(--neg); }
+  section.layer { margin: 2.2rem 0; }
+  h2.section-title { font-size: 15px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+    margin: 0 0 .9rem; padding-bottom: .4rem; border-bottom: 1px solid var(--border); }
+  h2.section-title .note { text-transform: none; letter-spacing: 0; font-weight: 400; }
 
-.donut-wrap { display: flex; align-items: center; gap: 1.2rem; }
-.donut-legend { display: flex; flex-direction: column; gap: .5rem; font-size: .82rem; flex: 1; min-width: 0; }
-.donut-legend .item { display: flex; justify-content: space-between; gap: .6rem; align-items: baseline; }
-.donut-legend .item span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.donut-legend .item span:last-child { flex-shrink: 0; font-weight: 600; }
-.donut-legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: .4rem; flex-shrink: 0; }
+  .summary p { margin: 0 0 .6rem; font-size: 14px; }
+  .summary p:last-child { margin-bottom: 0; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; margin-top: 1rem; }
+  .tile .label { color: var(--muted); font-size: 12px; }
+  .tile .value { font-size: 22px; font-weight: 700; margin-top: .1rem; }
+  .tile .sub { font-size: 12px; color: var(--muted); margin-top: .1rem; }
+  .pos { color: var(--pos); } .neg { color: var(--neg); }
 
-.dq-mini { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-bottom: .8rem; }
-.dq-mini .n { font-size: 1.3rem; font-weight: 700; }
-.dq-mini .l { color: var(--muted); font-size: .76rem; }
-.dq-mini .err .n { color: var(--neg); }
-.dq-mini .warn .n { color: #c77c00; }
-a.goto { color: var(--accent); font-size: .82rem; text-decoration: none; font-weight: 600; }
+  .health-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: .7rem; margin-top: 1.2rem; }
+  @media (max-width: 860px) { .health-strip { grid-template-columns: repeat(2, 1fr); } }
+  .health-item { border: 1px solid var(--border); border-radius: 10px; padding: .6rem .7rem; font-size: 12.5px; }
+  .health-item .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: .35rem; }
+  .health-item .dot.green { background: var(--pos); } .health-item .dot.amber { background: var(--amber); }
+  .health-item .dot.red { background: var(--neg); } .health-item .dot.na { background: var(--border); }
+  .health-item .v { font-weight: 700; font-size: 14px; margin-top: .15rem; }
+  .health-item .d { color: var(--muted); margin-top: .1rem; }
 
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; }
-.cards .card .label { color: var(--muted); font-size: .78rem; }
-.cards .card .value { font-size: 1.3rem; font-weight: 700; margin-top: .15rem; }
-.cards .card .reason { color: var(--muted); font-size: .74rem; margin-top: .2rem; }
-.pos { color: var(--pos); } .neg { color: var(--neg); }
+  .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: .7rem; margin-bottom: 1rem; }
+  .kpi { border: 1px solid var(--border); border-radius: 10px; padding: .6rem .7rem; }
+  .kpi .label { color: var(--muted); font-size: 11.5px; }
+  .kpi .value { font-size: 17px; font-weight: 700; margin-top: .1rem; }
+  .kpi .reason { font-size: 11px; color: var(--muted); margin-top: .1rem; }
 
-.table-scroll { overflow-x: auto; border-radius: 16px; box-shadow: var(--shadow); }
-table.full { width: 100%; min-width: 640px; border-collapse: collapse; background: var(--card); }
-table.full th, table.full td { padding: .6rem .8rem; text-align: right; border-bottom: 1px solid var(--border); font-size: .88rem; }
-table.full th:first-child, table.full td:first-child, table.full th:nth-child(2), table.full td:nth-child(2) { text-align: left; }
-table.full thead th { color: var(--muted); font-weight: 700; font-size: .74rem; text-transform: uppercase; letter-spacing: .03em; }
-table.full tbody tr:last-child td { border-bottom: none; }
+  table.full { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.full th, table.full td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  table.full th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; }
+  .table-scroll { overflow-x: auto; }
+  .table-scroll table.full { min-width: 560px; }
 
-.amt.hidden { filter: blur(6px); user-select: none; }
-.toggle { margin-left: auto; font-size: .82rem; cursor: pointer; color: var(--accent); background: var(--accent-soft); border: none; border-radius: 8px; padding: .4rem .7rem; font-weight: 600; }
-.dq-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .4rem; }
-.dq-list li { background: var(--card); border-left: 4px solid var(--muted); border-radius: 10px; padding: .55rem .75rem; font-size: .83rem; box-shadow: var(--shadow); }
-.dq-list li.error { border-left-color: var(--neg); }
-.dq-list li.warning { border-left-color: #c77c00; }
-.badge-ok { color: var(--pos); } .badge-bad { color: var(--neg); }
-.chart-wrap { background: var(--card); border-radius: 16px; padding: 1.1rem; overflow-x: auto; box-shadow: var(--shadow); }
-svg.chart text { fill: var(--muted); font-size: 10px; }
-svg.chart .bar { fill: var(--accent); }
-svg.chart .bar.neg { fill: var(--neg); }
-.goal-sim { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-.goal-sim label { display: block; font-size: .8rem; color: var(--muted); margin-top: .6rem; }
-.goal-sim input[type=range] { width: 100%; accent-color: var(--accent); }
-.goal-sim .out .value { font-size: 1.1rem; }
-.preset-btns { display: flex; gap: .5rem; margin-top: .4rem; }
-.preset-btns button { background: var(--accent-soft); color: var(--accent); border: none; border-radius: 8px; padding: .3rem .7rem; font-size: .8rem; font-weight: 600; cursor: pointer; }
-.preset-btns button.active { background: var(--accent); color: #fff; }
-.heatmap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 4px; }
-.heatmap-cell { border-radius: 6px; padding: .4rem .3rem; font-size: .72rem; text-align: center; color: #1a1f36; }
-.heatmap-cell.partial { outline: 1px dashed var(--muted); outline-offset: -1px; }
-.heatmap-cell .hm-month { display: block; opacity: .65; font-size: .65rem; }
-.heatmap-cell .hm-ret { display: block; font-weight: 700; }
-.bar-list .item { display: grid; grid-template-columns: 9rem 1fr 5.5rem; align-items: center; gap: .6rem; padding: .3rem 0; font-size: .82rem; }
-.bar-list .item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bar-list .item .bar-track { background: var(--border); border-radius: 4px; height: 8px; position: relative; overflow: hidden; }
-.bar-list .item .bar-fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
-.bar-list .item .bar-fill.pos { background: var(--pos); left: 50%; }
-.bar-list .item .bar-fill.neg { background: var(--neg); right: 50%; }
-.bar-list .item .v { text-align: right; font-weight: 600; }
-.note { color: var(--muted); font-size: .78rem; }
-footer { text-align: center; color: var(--muted); font-size: .78rem; padding: 2rem 0; }
-@media (max-width: 640px) { .goal-sim { grid-template-columns: 1fr; } }
+  details.appendix summary { cursor: pointer; font-weight: 700; font-size: 14px; padding: .5rem 0; }
+  details.appendix .sub { margin: 1.4rem 0; }
+  .note { color: var(--muted); font-size: 12.5px; }
+  .badge-ok { color: var(--pos); } .badge-bad { color: var(--neg); }
+  .dq-list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+  .dq-list li { padding: .3rem 0; border-bottom: 1px solid var(--border); }
+  .dq-list li.error { color: var(--neg); } .dq-list li.warning { color: var(--amber); }
+
+  .chart { width: 100%; height: 360px; }
+  .chart.short { height: 260px; }
+  @media (max-width: 860px) { .chart { height: 240px; } }
+
+  .goal-sim .controls label { display: block; font-size: 12.5px; color: var(--muted); margin-top: .7rem; }
+  .goal-sim .controls input[type=range] { width: 100%; }
+  .preset-btns { display: flex; gap: .5rem; margin-top: .3rem; }
+  .preset-btns button { background: var(--accent-soft); color: var(--accent); border: none; border-radius: 8px;
+    padding: .3rem .7rem; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .preset-btns button.active { background: var(--accent); color: #fff; }
+
+  .bar-list .item { display: grid; grid-template-columns: 9rem 1fr 5.5rem; align-items: center; gap: .6rem; padding: .3rem 0; font-size: 12.5px; }
+  .bar-list .item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-list .item .bar-track { background: var(--border); border-radius: 4px; height: 8px; position: relative; overflow: hidden; }
+  .bar-list .item .bar-fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+  .bar-list .item .bar-fill.pos { background: var(--pos); left: 50%; } .bar-list .item .bar-fill.neg { background: var(--neg); right: 50%; }
+  .bar-list .item .v { text-align: right; font-weight: 600; }
+
+  @media print {
+    nav.jump, .toggles, .preset-btns, input[type=range] { display: none !important; }
+    details.appendix { display: block; } details.appendix > :not(summary) { display: block !important; }
+    .card { box-shadow: none; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>Portfolio Cockpit</h1>
-  <span class="meta">Daten bis {{ booking_as_of.isoformat() }} · bewertet zum {{ valuation_date.isoformat() }} · Quelle {{ source_file }} · Parser v{{ parser_version }}</span>
-  <button class="toggle" id="hide-toggle" type="button">Beträge verbergen</button>
-</header>
-<main>
+<div class="wrap">
 
-<section>
-  <div class="dash-row">
-    <div class="card hero">
-      <div class="hero-head">
-        <div>
-          <div class="hero-label">Depot + Cash</div>
-          <div class="hero-value amt">{% if kpis.value is not none %}{{ kpis.value | eur }}{% if kpis.value_estimated %} <span class="note" title="Mind. eine Position ist nur über einen aus Kaufpreisen abgeleiteten Kurs bewertet">≈</span>{% endif %}{% else %}n/a <span class="note">({{ kpis.value_reason }})</span>{% endif %}</div>
-          {% if kpis.gain_eur is not none %}<div class="note">Gewinn € seit Start: <strong class="amt {{ 'pos' if kpis.gain_eur > 0 else 'neg' if kpis.gain_eur < 0 else '' }}">{{ kpis.gain_eur | eur(true) }}</strong> · XIRR seit Start: <strong class="{{ 'pos' if kpis.xirr and kpis.xirr > 0 else 'neg' if kpis.xirr and kpis.xirr < 0 else '' }}">{{ kpis.xirr | pct if kpis.xirr is not none else "n/a" }}</strong></div>{% endif %}
+<header class="band">
+  <div>
+    <h1>ETF-Portfolio-Bericht · Stand {{ valuation_date.isoformat() }}</h1>
+    <div class="sub">
+      Daten bis {{ booking_as_of.isoformat() }} · Kurse vom {{ valuation_date.isoformat() }} ·
+      <span class="dq-dot {{ dq_dot_color }}" title="{{ dq_dot_title }}"></span>Datenqualität
+      · Quelle {{ source_file }}
+    </div>
+  </div>
+  <div class="toggles">
+    <button id="hide-toggle" type="button">Beträge verbergen</button>
+    <button onclick="window.print()" type="button">Drucken</button>
+  </div>
+</header>
+
+<nav class="jump">
+  <a href="#ueberblick">Überblick</a>
+  <a href="#performance">Performance</a>
+  <a href="#beitrag">Beitrag</a>
+  <a href="#risiko">Risiko</a>
+  <a href="#allokation">Allokation</a>
+  <a href="#kosten">Kosten</a>
+  <a href="#ziele">Ziele</a>
+  <a href="#anhang">Anhang</a>
+</nav>
+
+<!-- ============ LAYER 1 — ÜBERBLICK ============ -->
+<section class="layer" id="ueberblick">
+  <div class="grid-12">
+    <div class="col-4 card summary">
+      <h2 class="section-title" style="margin-top:0">Zusammenfassung</h2>
+      {% for s in summary_sentences %}<p>{{ s }}</p>{% endfor %}
+      <div class="tiles">
+        <div class="tile">
+          <div class="label">Depotwert</div>
+          <div class="value amt">{{ kpis.value | eur if kpis.value is not none else "n/a" }}{% if kpis.value_estimated %} ≈{% endif %}</div>
+          <div class="sub">{% if kpis.value is none %}{{ kpis.value_reason }}{% else %}inkl. Cash{% endif %}</div>
         </div>
-        <div class="range-tabs" id="range-tabs">
+        <div class="tile">
+          <div class="label">Gewinn €</div>
+          <div class="value amt {{ 'pos' if kpis.gain_eur and kpis.gain_eur > 0 else 'neg' if kpis.gain_eur and kpis.gain_eur < 0 else '' }}">{{ kpis.gain_eur | eur(true) if kpis.gain_eur is not none else "n/a" }}</div>
+          <div class="sub">seit Start</div>
+        </div>
+        <div class="tile">
+          <div class="label">Rendite p.a. (XIRR)</div>
+          <div class="value {{ 'pos' if kpis.xirr and kpis.xirr > 0 else 'neg' if kpis.xirr and kpis.xirr < 0 else '' }}">{{ kpis.xirr | pct if kpis.xirr is not none else "n/a" }}</div>
+          <div class="sub">eigene Cashflows berücksichtigt</div>
+        </div>
+        <div class="tile">
+          <div class="label">vs. Benchmark</div>
+          {% if kpis.twr is not none and kpis.benchmark_twr is not none %}
+          <div class="value {{ 'pos' if kpis.twr > kpis.benchmark_twr else 'neg' }}">{{ ((kpis.twr - kpis.benchmark_twr) * 100) | de_num(1, true) }} pp</div>
+          <div class="sub">TWR, gleicher Zeitraum{% if kpis.coverage_estimated %} · ≈{% endif %}</div>
+          {% else %}
+          <div class="value">n/a</div><div class="sub">keine Kursabdeckung</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="col-8 card">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:.5rem">
+        <h2 class="section-title" style="margin:0;border:none;padding:0">Wertentwicklung</h2>
+        <div>
+          <span class="preset-btns" id="hero-mode">
+            <button data-mode="eur" class="active">€ Vermögen</button>
+            <button data-mode="index">Index = 100</button>
+            <button data-mode="dd">Drawdown</button>
+          </span>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin:.4rem 0">
+        <span class="preset-btns" id="hero-range">
           <button data-range="90">3M</button>
           <button data-range="365">1J</button>
-          <button data-range="0" class="active">MAX</button>
-        </div>
+          <button data-range="ytd">YTD</button>
+          <button data-range="max" class="active">MAX</button>
+        </span>
       </div>
-      <div class="chart-wealth">
-        <div id="chart-wealth"></div>
-        <div class="chart-tooltip" id="chart-tooltip"></div>
+      <div id="chart-hero" class="chart"></div>
+      <div class="note" style="margin-top:.4rem">
+        {% if kpis.twr_start %}Performance-Linie seit {{ kpis.twr_start.isoformat() }}{% if kpis.coverage_estimated %} · ≈ geschätzt ({{ (kpis.coverage_implied_share * 100) | round(0) | int }} % implizite Kurse aus Kaufpreisen){% endif %}{% endif %}
       </div>
-      <div class="legend" id="wealth-legend"></div>
-      {% if kpis.twr_start %}<div class="note" style="margin-top:.4rem">Depotwert-Linie seit {{ kpis.twr_start.isoformat() }}{% if kpis.coverage_estimated %} · ≈ geschätzt ({{ (kpis.coverage_implied_share * 100) | round(0) | int }} % implizite Kurse aus Kaufpreisen){% endif %}{% if kpis.coverage_unpriced %} · ohne Kurs: {{ kpis.coverage_unpriced | join(', ') }}{% endif %}</div>{% endif %}
-    </div>
-
-    <div class="card stat-list">
-      <h3>Gesamtentwicklung</h3>
-      <div class="row"><span class="k">Depotwert</span><strong class="amt">{{ (kpis.value - cash_sum) | eur if kpis.value is not none else "n/a" }}</strong></div>
-      <div class="row"><span class="k">Cash-Bestand</span><strong class="amt">{{ cash_sum | eur }}</strong></div>
-      <div class="row"><span class="k">Gesamt (Depot + Cash)</span><strong class="amt">{{ kpis.value | eur if kpis.value is not none else "n/a" }}</strong></div>
-      <div class="row"><span class="k">Einzahlungen</span><strong class="amt">{{ kpis.net_contributions | eur }}</strong></div>
-      <div class="row"><span class="k">Auszahlungen</span><strong class="amt">{{ withdrawals_sum | eur }}</strong></div>
-      <div class="row"><span class="k" title="Eigene Kennzahl: Gain € ÷ Einzahlungen — keine Brokerberechnung, keine Zeitgewichtung">Gewinn ÷ Einzahlungen</span>
-        <strong class="{{ 'pos' if perf_on_deposit and perf_on_deposit > 0 else 'neg' if perf_on_deposit and perf_on_deposit < 0 else '' }}">{{ perf_on_deposit | pct if perf_on_deposit is not none else "n/a" }}</strong></div>
     </div>
   </div>
 
-  <div class="dash-row-3">
-    <div class="card">
-      <h3>Meine Trades</h3>
-      <table class="mini-table">
-        {% for b in trade_buckets %}
-        <tr><td>{{ b.label }}</td><td class="num">{{ b.buy + b.sell }}</td><td class="buy">{{ b.buy }}</td><td class="sell">{{ b.sell }}</td></tr>
-        {% endfor %}
-      </table>
+  <div class="health-strip">
+    {% for h in health_checks %}
+    <div class="health-item">
+      <div><span class="dot {{ h.status }}"></span>{{ h.label }}</div>
+      <div class="v">{{ h.value_text }}</div>
+      <div class="d">{{ h.detail }}</div>
     </div>
-
-    <div class="card">
-      <div class="hero-head" style="margin-bottom:.9rem">
-        <h3 style="margin:0">Allokation</h3>
-        <div class="mini-tabs" id="donut-tabs">
-          <button data-tab="top" class="active">Top Positionen</button>
-          <button data-tab="class">Assetklasse</button>
-        </div>
-      </div>
-      <div class="donut-wrap">
-        <div id="chart-donut"></div>
-        <div class="donut-legend" id="donut-legend"></div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Datenqualität</h3>
-      <div class="dq-mini">
-        <div><div class="n">{{ event_count }}</div><div class="l">Buchungen</div></div>
-        <div><div class="n">{{ unknown_count }}</div><div class="l">Unbekannt</div></div>
-        <div class="err"><div class="n">{{ dq_error_count }}</div><div class="l">Fehler</div></div>
-        <div class="warn"><div class="n">{{ dq_warning_count }}</div><div class="l">Warnungen</div></div>
-      </div>
-      <a class="goto" href="#data-quality">Details ↓</a>
-    </div>
-  </div>
-</section>
-
-<section>
-  <h2 class="section-title">Weitere Kennzahlen <span class="note">— {{ kpis.twr_start.isoformat() if kpis.twr_start else "keine Kursabdeckung" }} bis {{ valuation_date.isoformat() }}{% if kpis.coverage_estimated %}, ≈ geschätzt{% endif %}</span></h2>
-  <div class="cards">
-    <div class="card"><div class="label">TWR gesamt</div>
-      <div class="value {{ 'pos' if kpis.twr and kpis.twr > 0 else 'neg' if kpis.twr and kpis.twr < 0 else '' }}">{% if kpis.coverage_estimated %}≈ {% endif %}{{ kpis.twr | pct if kpis.twr is not none else "n/a" }}</div>
-      {% if kpis.twr is none %}<div class="reason">keine Kursabdeckung</div>{% endif %}
-    </div>
-    <div class="card"><div class="label">TWR p.a.</div>
-      <div class="value {{ 'pos' if kpis.twr_pa and kpis.twr_pa > 0 else 'neg' if kpis.twr_pa and kpis.twr_pa < 0 else '' }}">{{ kpis.twr_pa | pct if kpis.twr_pa is not none else "n/a" }}</div>
-      {% if kpis.twr_pa is none %}<div class="reason">Abdeckung &lt; 1 Jahr</div>{% endif %}
-    </div>
-    <div class="card"><div class="label">TWR YTD</div>
-      <div class="value {{ 'pos' if kpis.twr_ytd and kpis.twr_ytd > 0 else 'neg' if kpis.twr_ytd and kpis.twr_ytd < 0 else '' }}">{{ kpis.twr_ytd | pct if kpis.twr_ytd is not none else "n/a" }}</div>
-      {% if kpis.twr_ytd is none %}<div class="reason">keine Kursabdeckung</div>{% endif %}
-    </div>
-    <div class="card"><div class="label">Benchmark TWR <span class="note">(gleicher Zeitraum)</span></div>
-      <div class="value {{ 'pos' if kpis.benchmark_twr and kpis.benchmark_twr > 0 else 'neg' if kpis.benchmark_twr and kpis.benchmark_twr < 0 else '' }}">{{ kpis.benchmark_twr | pct if kpis.benchmark_twr is not none else "n/a" }}</div>
-      {% if kpis.twr is not none and kpis.benchmark_twr is not none %}<div class="reason">Δ {{ ((kpis.twr - kpis.benchmark_twr) * 100) | round(1) }} pp</div>{% endif %}
-    </div>
-    <div class="card"><div class="label">Max Drawdown</div>
-      <div class="value neg">{{ kpis.max_drawdown | pct if kpis.max_drawdown is not none else "n/a" }}</div>
-      {% if kpis.max_drawdown is none %}<div class="reason">keine Kursabdeckung</div>{% endif %}
-    </div>
-    <div class="card"><div class="label">Akt. Drawdown</div>
-      <div class="value {{ 'neg' if kpis.current_drawdown and kpis.current_drawdown < 0 else '' }}">{{ kpis.current_drawdown | pct if kpis.current_drawdown is not none else "n/a" }}</div>
-    </div>
-    <div class="card"><div class="label">Volatilität p.a.</div>
-      <div class="value">{{ kpis.volatility | pct if kpis.volatility is not none else "n/a" }}</div>
-      {% if kpis.volatility is none %}<div class="reason">&lt; 120 Tageswerte</div>{% endif %}
-    </div>
-    <div class="card"><div class="label">Größte Position</div>
-      <div class="value">{{ (kpis.largest_position[1] | pct) if kpis.largest_position else "n/a" }}</div>
-      {% if kpis.largest_position %}<div class="reason">{{ chart_data.holdings_names.get(kpis.largest_position[0], kpis.largest_position[0]) }}</div>{% endif %}
-    </div>
-    <div class="card"><div class="label">Top-3-Anteil</div>
-      <div class="value">{{ kpis.top3_share | pct if kpis.top3_share is not none else "n/a" }}</div>
-    </div>
-    <div class="card"><div class="label">Turnover (12M)</div>
-      <div class="value">{{ kpis.turnover_12m | pct if kpis.turnover_12m is not none else "n/a" }}</div>
-    </div>
-    <div class="card"><div class="label">Instrumente</div>
-      <div class="value">{{ kpis.instruments_held }} <span class="note">/ {{ kpis.instruments_ever }} gesamt</span></div>
-    </div>
-    <div class="card"><div class="label">Bester Monat</div>
-      <div class="value pos">{{ kpis.best_month.ret | pct if kpis.best_month else "n/a" }}</div>
-      {% if kpis.best_month %}<div class="reason">{{ kpis.best_month.month }}</div>{% endif %}
-    </div>
-    <div class="card"><div class="label">Schlechtester Monat</div>
-      <div class="value neg">{{ kpis.worst_month.ret | pct if kpis.worst_month else "n/a" }}</div>
-      {% if kpis.worst_month %}<div class="reason">{{ kpis.worst_month.month }}</div>{% endif %}
-    </div>
-    <div class="card"><div class="label">Investiert (Kostenbasis)</div><div class="value amt">{{ kpis.invested | eur }}</div></div>
-    <div class="card"><div class="label">Realisiert</div><div class="value amt {{ 'pos' if kpis.realized > 0 else 'neg' if kpis.realized < 0 else '' }}">{{ kpis.realized | eur(true) }}</div></div>
-    <div class="card"><div class="label">Steuern netto <span class="note">(+ = Erstattung)</span></div><div class="value amt">{{ kpis.taxes | eur(true) }}</div></div>
-    <div class="card"><div class="label">Dividenden</div><div class="value amt">{{ kpis.dividends | eur }}</div></div>
-  </div>
-</section>
-
-<section>
-  <h2 class="section-title">Positionen</h2>
-  <div class="table-scroll">
-  <table class="full">
-    <thead><tr><th>ISIN</th><th>Name</th><th>Menge</th><th>Ø Kosten</th><th>Kurs</th><th>Wert</th><th>Gewicht</th><th>Unrealisiert</th></tr></thead>
-    <tbody>
-    {% for h in holdings %}
-      <tr>
-        <td>{{ h.isin }}</td>
-        <td>{{ h.name }}</td>
-        <td class="amt">{{ h.qty | qty }}</td>
-        <td class="amt">{{ h.avg_cost | eur if h.avg_cost is not none else "n/a" }}</td>
-        <td class="amt">{{ h.price | eur if h.price is not none else "n/a" }}{% if h.estimated %} <span class="note" title="Aus Kaufpreisen abgeleitet, kein Marktkurs">≈</span>{% endif %}{% if h.price_date %} <span class="note">({{ h.price_date.isoformat() }})</span>{% endif %}</td>
-        <td class="amt">{{ h.value | eur if h.value is not none else "n/a" }}</td>
-        <td>{{ (h.weight | pct) if h.weight is not none else "n/a" }}</td>
-        <td class="amt {{ 'pos' if h.unrealized and h.unrealized > 0 else 'neg' if h.unrealized and h.unrealized < 0 else '' }}">
-          {{ h.unrealized | eur(true) if h.unrealized is not none else "n/a" }}{% if h.unrealized_pct is not none %} ({{ h.unrealized_pct | pct }}){% endif %}
-        </td>
-      </tr>
-    {% else %}
-      <tr><td colspan="8">Keine offenen Positionen.</td></tr>
     {% endfor %}
-    </tbody>
-  </table>
   </div>
 </section>
 
-<section>
-  <h2 class="section-title">Monatsrenditen <span class="note">(TWR, {{ kpis.twr_start.isoformat() if kpis.twr_start else "" }} bis {{ valuation_date.isoformat() }})</span></h2>
-  <div class="card">
-    {% if monthly_returns %}
-    <div class="heatmap-grid" id="heatmap-grid">
-      {% for m in monthly_returns %}
-      <div class="heatmap-cell{{ ' partial' if m.partial }}" style="background:{{ m.ret | heatcolor }}" title="{{ m.month }}{{ ' (unvollständig)' if m.partial }}: {{ m.ret | pct }}">
-        <span class="hm-month">{{ m.month[5:] }}/{{ m.month[2:4] }}</span><span class="hm-ret">{{ m.ret | pct }}</span>
-      </div>
-      {% endfor %}
+<!-- ============ LAYER 2 — ANALYSE ============ -->
+<section class="layer" id="performance">
+  <h2 class="section-title">Performance</h2>
+  <div class="kpi-row">
+    <div class="kpi"><div class="label">TWR seit Start</div><div class="value">{{ kpis.twr | pct if kpis.twr is not none else "n/a" }}</div></div>
+    <div class="kpi"><div class="label">TWR p.a.</div><div class="value">{{ kpis.twr_pa | pct if kpis.twr_pa is not none else "n/a" }}</div>{% if kpis.twr_pa is none %}<div class="reason">Abdeckung &lt; 1 Jahr</div>{% endif %}</div>
+    <div class="kpi"><div class="label">TWR YTD</div><div class="value">{{ kpis.twr_ytd | pct if kpis.twr_ytd is not none else "n/a" }}</div></div>
+    <div class="kpi"><div class="label">Rolling 1 Jahr</div><div class="value">{{ kpis.rolling_1y | pct if kpis.rolling_1y is not none else "n/a" }}</div>{% if kpis.rolling_1y is none %}<div class="reason">Abdeckung &lt; 1 Jahr</div>{% endif %}</div>
+    <div class="kpi"><div class="label">Bester Monat</div><div class="value pos">{{ kpis.best_month.ret | pct if kpis.best_month else "n/a" }}</div>{% if kpis.best_month %}<div class="reason">{{ kpis.best_month.month }}</div>{% endif %}</div>
+    <div class="kpi"><div class="label">Schlechtester Monat</div><div class="value neg">{{ kpis.worst_month.ret | pct if kpis.worst_month else "n/a" }}</div>{% if kpis.worst_month %}<div class="reason">{{ kpis.worst_month.month }}</div>{% endif %}</div>
+  </div>
+  <div class="grid-12">
+    <div class="col-8 card">
+      <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Monatsrenditen — Portfolio vs. Benchmark</h3>
+      <div id="chart-heatmap" class="chart short"></div>
     </div>
-    <div class="note" style="margin-top:.6rem">Schraffierte/markierte Monate sind unvollständig (Deckung beginnt oder endet mitten im Monat).</div>
+    <div class="col-4 card">
+      <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Jahresrenditen</h3>
+      <div id="chart-annual" class="chart short"></div>
+    </div>
+  </div>
+</section>
+
+<section class="layer" id="beitrag">
+  <h2 class="section-title">Beitrag <span class="note">— woher kommt Ihr Geld</span></h2>
+  <div class="grid-12">
+    <div class="col-6 card">
+      <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Ergebnis je Instrument (realisiert + unrealisiert)</h3>
+      <div id="chart-contribution" class="chart short"></div>
+      <div class="note">Erträge (Dividenden) werden im Ledger nur monatlich, nicht je Instrument verbucht, und sind hier deshalb nicht enthalten — siehe Wasserfall rechts für die Gesamtsicht.</div>
+    </div>
+    <div class="col-6 card">
+      <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Wasserfall: Einzahlungen → Depotwert</h3>
+      {% if waterfall %}
+      <div id="chart-waterfall" class="chart short"></div>
+      {% else %}
+      <p class="note">n/a — Depotwert nicht vollständig bewertet ({{ kpis.value_reason }}).</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="layer" id="risiko">
+  <h2 class="section-title">Risiko</h2>
+  <div class="kpi-row">
+    <div class="kpi"><div class="label">Volatilität p.a.</div><div class="value">{{ kpis.volatility | pct if kpis.volatility is not none else "n/a" }}</div>{% if kpis.volatility is none %}<div class="reason">&lt; 120 Tageswerte</div>{% endif %}</div>
+    <div class="kpi"><div class="label">Max Drawdown</div><div class="value neg">{{ kpis.max_drawdown | pct if kpis.max_drawdown is not none else "n/a" }}</div></div>
+    <div class="kpi"><div class="label">Akt. Drawdown</div><div class="value {{ 'neg' if kpis.current_drawdown and kpis.current_drawdown < 0 }}">{{ kpis.current_drawdown | pct if kpis.current_drawdown is not none else "n/a" }}</div></div>
+    <div class="kpi"><div class="label">DD-Dauer (max / aktuell)</div><div class="value">{{ kpis.drawdown_duration_max_days ~ " / " ~ kpis.drawdown_duration_current_days ~ " T." if kpis.drawdown_duration_max_days is not none else "n/a" }}</div></div>
+    <div class="kpi"><div class="label">Sharpe</div><div class="value">{{ kpis.sharpe | de_num(2) }}</div><div class="reason">r_f {{ kpis.risk_free_rate | pct }}</div></div>
+    <div class="kpi"><div class="label">Sortino</div><div class="value">{{ kpis.sortino | de_num(2) }}</div></div>
+    <div class="kpi"><div class="label">Beta / Korrelation</div><div class="value">{{ kpis.beta | de_num(2) }} / {{ kpis.correlation | de_num(2) }}</div><div class="reason">vs. Benchmark</div></div>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Underwater — Abstand zum bisherigen Hoch</h3>
+    <div id="chart-underwater" class="chart short"></div>
+    <p class="note">Risiko/Rendite-Scatter gegen Modell-Portfolios ist in dieser Version nicht enthalten (siehe docs/dev/report-v3-concept.md §5.1/Step D).</p>
+  </div>
+</section>
+
+<section class="layer" id="allokation">
+  <h2 class="section-title">Allokation &amp; Diversifikation</h2>
+  <div class="grid-12">
+    <div class="col-6 card">
+      <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Nach Position</h3>
+      <div id="chart-alloc-position" class="chart short"></div>
+    </div>
+    <div class="col-6 card">
+      <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Nach Anlageklasse</h3>
+      <div id="chart-alloc-class" class="chart short"></div>
+    </div>
+  </div>
+  <div class="grid-12" style="margin-top:1rem">
+    <div class="col-4 card">
+      <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Regionen (Look-Through)</h3>
+      {% if region_lt.available %}<div id="chart-region" class="chart short"></div>{% else %}<p class="note">n/a — Stammdaten fehlen.<br>{{ region_lt.reason }}</p>{% endif %}
+    </div>
+    <div class="col-4 card">
+      <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Sektoren (Look-Through)</h3>
+      {% if sector_lt.available %}<div id="chart-sector" class="chart short"></div>{% else %}<p class="note">n/a — Stammdaten fehlen.<br>{{ sector_lt.reason }}</p>{% endif %}
+    </div>
+    <div class="col-4 card">
+      <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Währungen (Look-Through)</h3>
+      {% if currency_lt.available %}<div id="chart-currency" class="chart short"></div>{% else %}<p class="note">n/a — Stammdaten fehlen.<br>{{ currency_lt.reason }}</p>{% endif %}
+    </div>
+  </div>
+  <div class="card" style="margin-top:1rem">
+    <h3 style="margin-top:0;font-size:13px;color:var(--muted)">ETF-Overlap</h3>
+    {% if overlap_pairs %}
+      <div class="table-scroll"><table class="full"><thead><tr><th>A</th><th>B</th><th>Überlappung (Top-Holdings)</th></tr></thead><tbody>
+      {% for p in overlap_pairs %}<tr><td>{{ chart_data.holdings_names.get(p.a, p.a) }}</td><td>{{ chart_data.holdings_names.get(p.b, p.b) }}</td><td>{{ p.overlap | pct }}</td></tr>{% endfor %}
+      </tbody></table></div>
     {% else %}
-    <p class="note">Keine Kursabdeckung für Monatsrenditen.</p>
+      <p class="note">n/a — Stammdaten fehlen. {{ overlap_reason }}</p>
     {% endif %}
   </div>
 </section>
 
-<section>
-  <h2 class="section-title">Monatsdetail</h2>
-  <div class="dash-row-3">
-    <div class="chart-wrap"><h3>Einzahlungen / Monat</h3><div id="chart-savings"></div></div>
-    <div class="chart-wrap"><h3>Käufe vs. Verkäufe / Monat (netto €)</h3><div id="chart-trades"></div></div>
-    <div class="chart-wrap"><h3>Steuern &amp; Erträge / Monat</h3><div id="chart-income"></div></div>
+<section class="layer" id="kosten">
+  <h2 class="section-title">Kosten &amp; Aktivität</h2>
+  <div class="kpi-row">
+    <div class="kpi"><div class="label">Gewichtete TER</div><div class="value">{{ kpis.weighted_ter | pct(2) if kpis.weighted_ter is not none else "n/a" }}</div>{% if kpis.weighted_ter is none %}<div class="reason">{{ kpis.ter_reason }}</div>{% endif %}</div>
+    <div class="kpi"><div class="label">TER € / Jahr</div><div class="value amt">{{ kpis.weighted_ter_eur | eur if kpis.weighted_ter_eur is not none else "n/a" }}</div></div>
+    <div class="kpi"><div class="label">Steuern netto</div><div class="value amt">{{ kpis.taxes | eur(true) }}</div><div class="reason">+ = Erstattung (Tax Drag)</div></div>
+    <div class="kpi"><div class="label">Dividenden</div><div class="value amt">{{ kpis.dividends | eur }}</div></div>
+    <div class="kpi"><div class="label">Umschlag (12M)</div><div class="value">{{ kpis.turnover_12m | pct(0) if kpis.turnover_12m is not none else "n/a" }}</div></div>
+    <div class="kpi"><div class="label">Instrumente</div><div class="value">{{ kpis.instruments_held }} <span class="note">/ {{ kpis.instruments_ever }} gesamt</span></div></div>
+  </div>
+  <p class="note">
+    {% if kpis.weighted_ter_eur is not none %}Die laufenden Fondskosten betragen ca. {{ kpis.weighted_ter_eur | eur }}/Jahr.{% endif %}
+    Explizite Kosten (Order-/Krypto-Gebühren) sind, sofern im CSV als eigene Buchung erkennbar, in der Datenqualität/im Anhang aufgeführt, nicht separat aggregiert.
+  </p>
+</section>
+
+<section class="layer" id="ziele">
+  <h2 class="section-title">Ziele <span class="note">— illustrativ, konstante Rendite, keine Prognose</span></h2>
+  <div class="grid-12">
+    <div class="col-5 card goal-sim">
+      <div class="controls">
+        <label>Monatliche Sparrate: € <span id="g-saving-out"></span></label>
+        <input type="range" id="g-saving" min="0" max="3000" step="50" value="{{ goal.monthly_saving | default(700) }}">
+        <label>Jahre: <span id="g-years-out"></span></label>
+        <input type="range" id="g-years" min="1" max="40" step="1" value="{{ goal.years | default(10) }}">
+        <label>Rendite p.a.: <span id="g-return-out"></span></label>
+        <input type="range" id="g-return" min="0" max="15" step="0.5" value="7">
+        <div class="preset-btns" id="g-return-presets">
+          <button data-v="4" type="button">4 %</button>
+          <button data-v="7" type="button" class="active">7 %</button>
+          <button data-v="10" type="button">10 %</button>
+        </div>
+        <label>Inflation: <span id="g-inflation-out"></span></label>
+        <input type="range" id="g-inflation" min="0" max="10" step="0.1" value="{{ (goal.inflation | default(0.02) * 100) }}">
+        <label>Entnahmejahre: <span id="g-wyears-out"></span></label>
+        <input type="range" id="g-wyears" min="1" max="40" step="1" value="20">
+      </div>
+      <div class="tiles" style="margin-top:1rem">
+        <div class="tile"><div class="label">Startwert</div><div class="value amt">{{ kpis.value | eur if kpis.value is not none else "0,00 €" }}</div></div>
+        <div class="tile"><div class="label">Zukunftswert (nominal)</div><div class="value" id="g-fv-nominal">—</div></div>
+        <div class="tile"><div class="label">Zukunftswert (real)</div><div class="value" id="g-fv-real">—</div></div>
+        <div class="tile"><div class="label">Monatl. Entnahme</div><div class="value" id="g-withdrawal">—</div></div>
+      </div>
+      {% if goal.target_wealth_10y %}<p class="note" id="g-progress"></p>{% endif %}
+    </div>
+    <div class="col-7 card">
+      <h3 style="margin-top:0;font-size:13px;color:var(--muted)">Projektion (Fächer)</h3>
+      <div id="chart-fan" class="chart short"></div>
+    </div>
   </div>
 </section>
 
-<section>
-  <h2 class="section-title">Handel</h2>
+<!-- ============ LAYER 3 — ANHANG (collapsed) ============ -->
+<section class="layer" id="anhang">
+<details class="appendix">
+<summary>Anhang — Positionen, Transaktionen, Abgleich, Datenqualität, Methodik ({{ event_count }} Buchungen)</summary>
+
+<div class="sub">
+  <h3>Positionen</h3>
+  <div class="table-scroll"><table class="full">
+    <thead><tr><th>ISIN</th><th>Name</th><th>Menge</th><th>Ø Kosten</th><th>Kurs</th><th>Wert</th><th>Gewicht</th><th>Unrealisiert</th></tr></thead>
+    <tbody>
+    {% for h in holdings %}
+      <tr>
+        <td>{{ h.isin }}</td><td>{{ h.name }}</td>
+        <td class="amt">{{ h.qty | qty }}</td>
+        <td class="amt">{{ h.avg_cost | eur if h.avg_cost is not none else "n/a" }}</td>
+        <td class="amt">{{ h.price | eur if h.price is not none else "n/a" }}{% if h.estimated %} <span class="note" title="Aus Kaufpreisen abgeleitet">≈</span>{% endif %}</td>
+        <td class="amt">{{ h.value | eur if h.value is not none else "n/a" }}</td>
+        <td>{{ (h.weight | pct) if h.weight is not none else "n/a" }}</td>
+        <td class="amt {{ 'pos' if h.unrealized and h.unrealized > 0 else 'neg' if h.unrealized and h.unrealized < 0 else '' }}">{{ h.unrealized | eur(true) if h.unrealized is not none else "n/a" }}{% if h.unrealized_pct is not none %} ({{ h.unrealized_pct | pct }}){% endif %}</td>
+      </tr>
+    {% else %}<tr><td colspan="8">Keine offenen Positionen.</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+</div>
+
+<div class="sub">
+  <h3>Meine Trades</h3>
+  <div class="table-scroll"><table class="full">
+    <thead><tr><th>Zeitraum</th><th>Käufe</th><th>Verkäufe</th></tr></thead>
+    <tbody>{% for b in trade_buckets %}<tr><td>{{ b.label }}</td><td class="amt pos">{{ b.buy }}</td><td class="amt neg">{{ b.sell }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+</div>
+
+<div class="sub">
   <h3>Realisiert je Instrument</h3>
-  <div class="card" id="realized-bars"></div>
+  <div class="bar-list" id="realized-bars"></div>
 
   <details style="margin-top:1rem">
-    <summary style="cursor:pointer;font-weight:700;padding:.4rem 0">Verkaufsliste ({{ sells | length }}) — Details ↓</summary>
+    <summary style="cursor:pointer;font-weight:700;padding:.4rem 0">Verkaufsliste ({{ sells | length }})</summary>
     <input type="text" id="sell-filter" placeholder="Nach ISIN oder Name filtern…" style="width:100%;margin:.6rem 0;padding:.5rem .7rem;border:1px solid var(--border);border-radius:8px;font-size:.85rem">
-    <div class="table-scroll">
-    <table class="full" id="sell-table">
+    <div class="table-scroll"><table class="full" id="sell-table">
       <thead><tr><th>Datum</th><th>Name</th><th>Menge</th><th>Erlös</th><th>Kosten</th><th>Gewinn</th></tr></thead>
       <tbody>
       {% for s in sells %}
         <tr data-search="{{ (s.name or s.isin) | lower }} {{ s.isin | lower }}">
           <td>{{ s.date.isoformat() }}</td><td>{{ s.name or s.isin }}</td>
-          <td class="amt">{{ s.qty | qty }}</td>
-          <td class="amt">{{ s.proceeds | eur }}</td>
-          <td class="amt">{{ s.cost | eur }}</td>
+          <td class="amt">{{ s.qty | qty }}</td><td class="amt">{{ s.proceeds | eur }}</td><td class="amt">{{ s.cost | eur }}</td>
           <td class="amt {{ 'pos' if s.gain > 0 else 'neg' }}">{{ s.gain | eur(true) }}</td>
         </tr>
-      {% else %}
-        <tr><td colspan="6">Keine Verkäufe.</td></tr>
-      {% endfor %}
+      {% else %}<tr><td colspan="6">Keine Verkäufe.</td></tr>{% endfor %}
       </tbody>
-    </table>
-    </div>
+    </table></div>
   </details>
-</section>
+</div>
 
-<section>
-  <h2 class="section-title">Ziel-Simulator <span class="note">— illustrativ, konstante Rendite, keine Prognose</span></h2>
-  <div class="card goal-sim">
-    <div>
-      <label>Monatliche Sparrate: € <span id="g-saving-out"></span></label>
-      <input type="range" id="g-saving" min="0" max="3000" step="50" value="{{ goal.monthly_saving | default(700) }}">
-      <label>Jahre: <span id="g-years-out"></span></label>
-      <input type="range" id="g-years" min="1" max="40" step="1" value="{{ goal.years | default(10) }}">
-      <label>Rendite p.a.: <span id="g-return-out"></span></label>
-      <input type="range" id="g-return" min="0" max="15" step="0.5" value="7">
-      <div class="preset-btns" id="g-return-presets">
-        <button data-v="4" type="button">4 %</button>
-        <button data-v="7" type="button" class="active">7 %</button>
-        <button data-v="10" type="button">10 %</button>
-      </div>
-      <label>Inflation: <span id="g-inflation-out"></span></label>
-      <input type="range" id="g-inflation" min="0" max="10" step="0.1" value="{{ (goal.inflation | default(0.02) * 100) }}">
-      <label>Entnahmejahre: <span id="g-wyears-out"></span></label>
-      <input type="range" id="g-wyears" min="1" max="40" step="1" value="20">
-    </div>
-    <div class="out">
-      <div class="card" style="box-shadow:none;border:1px solid var(--border)"><div class="label">Startwert (aktueller Depotwert)</div><div class="value">{{ kpis.value | eur if kpis.value is not none else "0,00 €" }}</div></div>
-      <div class="card" style="box-shadow:none;border:1px solid var(--border)"><div class="label">Zukunftswert (nominal)</div><div class="value" id="g-fv-nominal">—</div></div>
-      <div class="card" style="box-shadow:none;border:1px solid var(--border)"><div class="label">Zukunftswert (real)</div><div class="value" id="g-fv-real">—</div></div>
-      <div class="card" style="box-shadow:none;border:1px solid var(--border)"><div class="label">Monatliche Entnahme (Annuität)</div><div class="value" id="g-withdrawal">—</div></div>
-    </div>
-  </div>
-</section>
-
-<section>
-  <h2 class="section-title">Abgleich — Vorabpauschale-Prüfpunkte</h2>
-  <div class="table-scroll">
-  <table class="full">
+<div class="sub">
+  <h3>Abgleich — Vorabpauschale-Prüfpunkte</h3>
+  <div class="table-scroll"><table class="full">
     <thead><tr><th>ISIN</th><th>Name</th><th>Stichtag</th><th>Gemeldete Menge</th><th>Rekonstruierte Menge</th><th>Abgleich</th></tr></thead>
     <tbody>
     {% for v in vap_checks %}
-      <tr>
-        <td>{{ v.isin }}</td><td>{{ v.name }}</td><td>{{ v.checkpoint.isoformat() }}</td>
+      <tr><td>{{ v.isin }}</td><td>{{ v.name }}</td><td>{{ v.checkpoint.isoformat() }}</td>
         <td class="amt">{{ v.stated_qty | qty }}</td><td class="amt">{{ v.reconstructed_qty | qty }}</td>
-        <td class="{{ 'badge-ok' if v.ok else 'badge-bad' }}">{{ "✓" if v.ok else "✗ Diff " + (v.diff | qty) }}</td>
-      </tr>
-    {% else %}
-      <tr><td colspan="6">Keine Vorabpauschale-Prüfpunkte in diesem Export.</td></tr>
-    {% endfor %}
+        <td class="{{ 'badge-ok' if v.ok else 'badge-bad' }}">{{ "✓" if v.ok else "✗ Diff " + (v.diff | qty) }}</td></tr>
+    {% else %}<tr><td colspan="6">Keine Vorabpauschale-Prüfpunkte in diesem Export.</td></tr>{% endfor %}
     </tbody>
-  </table>
-  </div>
-</section>
+  </table></div>
+</div>
 
-<section id="data-quality">
-  <h2 class="section-title">Datenqualität <span class="note">({{ event_count }} Buchungen, {{ unknown_count }} unbekannt, {{ buy_count }} Käufe, {{ sell_count }} Verkäufe, Cash Σ {{ cash_sum | eur }})</span></h2>
-
+<div class="sub">
   <h3>Kursabdeckung je ISIN</h3>
-  <div class="table-scroll" style="margin-bottom:1rem">
-  <table class="full">
+  <div class="table-scroll"><table class="full">
     <thead><tr><th>ISIN</th><th>Name</th><th>Status</th><th>Von</th><th>Bis</th><th>Markttage</th><th>Implizite Tage</th></tr></thead>
     <tbody>
     {% for p in price_coverage %}
-      <tr>
-        <td>{{ p.isin }}</td><td>{{ p.name }}</td><td>{{ p.status }}</td>
-        <td>{{ p['from'].isoformat() if p['from'] else "—" }}</td>
-        <td>{{ p.to.isoformat() if p.to else "—" }}</td>
-        <td class="amt">{{ p.market_days }}</td>
-        <td class="amt">{{ p.implied_days }}</td>
-      </tr>
-    {% else %}
-      <tr><td colspan="7">Keine Kurse geladen.</td></tr>
-    {% endfor %}
+      <tr><td>{{ p.isin }}</td><td>{{ p.name }}</td><td>{{ p.status }}</td>
+        <td>{{ p['from'].isoformat() if p['from'] else "—" }}</td><td>{{ p.to.isoformat() if p.to else "—" }}</td>
+        <td class="amt">{{ p.market_days }}</td><td class="amt">{{ p.implied_days }}</td></tr>
+    {% else %}<tr><td colspan="7">Keine Kurse geladen.</td></tr>{% endfor %}
     </tbody>
-  </table>
-  </div>
+  </table></div>
+</div>
 
+<div class="sub">
+  <h3>Datenqualität <span class="note">({{ event_count }} Buchungen, {{ unknown_count }} unbekannt, {{ buy_count }} Käufe, {{ sell_count }} Verkäufe, Cash Σ {{ cash_sum | eur }})</span></h3>
   <ul class="dq-list">
-  {% for item in dq_items %}
-    <li class="{{ item.severity }}">{{ item.message }}</li>
-  {% else %}
-    <li>Keine Datenqualitätsprobleme gefunden.</li>
-  {% endfor %}
+  {% for item in dq_items %}<li class="{{ item.severity }}">{{ item.message }}</li>
+  {% else %}<li>Keine Datenqualitätsprobleme gefunden.</li>{% endfor %}
   </ul>
+</div>
+
+<div class="sub">
+  <h3>Methodik &amp; Konventionen</h3>
+  <ul class="note" style="padding-left:1.1rem">
+    <li>TWR/Drawdown/Risiko-Kennzahlen starten erst am Tag, ab dem jede damals gehaltene Position einen Kurs hat (siehe Kursabdeckung) — nicht am ersten Einzahlungstag.</li>
+    <li>Ein Kurs ist entweder vollständig Markt- oder vollständig aus Kaufpreisen abgeleitet pro Haltezeitraum, nie gemischt innerhalb eines Zeitraums (docs/dev/report-v3-concept.md §1).</li>
+    <li>XIRR nutzt den Depotwert zum Stichtag als Schlusszahlung; ohne vollständige Bewertung ist XIRR n/a.</li>
+    <li>Sharpe/Sortino nutzen einen festen Zinssatz ({{ kpis.risk_free_rate | pct }}) aus config.yaml, keine Live-Daten.</li>
+    <li>Risiko/Rendite-Scatter, Modell-Portfolios und Marktumfeld/News (docs §5) sind in dieser Version nicht enthalten.</li>
+  </ul>
+</div>
+
+</details>
 </section>
 
-</main>
-<footer>Generated locally — no server, no database, no network calls except optional price fetching.</footer>
+</div>{# /wrap #}
 
 <script id="report-data" type="application/json">{{ data_json | safe }}</script>
 <script>
-(function () {
-  "use strict";
-  var data;
-  try {
-    data = JSON.parse(document.getElementById("report-data").textContent);
-  } catch (e) {
-    console.error("report data failed to parse", e);
-    data = { savings_by_month: {}, trades_by_month: {}, income_by_month: {}, holdings_weights: {}, holdings_names: {}, asset_class_weights: {}, wealth: {} };
-  }
-
-  document.getElementById("hide-toggle").addEventListener("click", function () {
-    document.querySelectorAll(".amt").forEach(function (el) { el.classList.toggle("hidden"); });
-  });
-
-  function fmtEur(v) {
-    return (v < 0 ? "-" : "") + Math.abs(v).toLocaleString("de-DE", { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + " €";
-  }
-  function fmtEurFull(v) {
-    return (v < 0 ? "-" : "") + Math.abs(v).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
-  }
-  function fmtDate(ms) {
-    return new Date(ms).toLocaleDateString("de-DE", { day: "2-digit", month: "short", year: "numeric" });
-  }
-
-  // ---------------------------------------------------------------------
-  // Minimal dependency-free SVG chart renderers. No vendored library, no
-  // CDN — works fully offline, same spirit as the rest of this report.
-  // ---------------------------------------------------------------------
-
-  function barChart(el, series) {
-    var w = Math.max(360, series.length * 46), h = 160, padBottom = 20;
-    var max = Math.max(1, ...series.map(function (s) { return Math.abs(s.value); }));
-    var svg = ['<svg class="chart" width="' + w + '" height="' + (h + padBottom) + '" viewBox="0 0 ' + w + ' ' + (h + padBottom) + '">'];
-    series.forEach(function (s, i) {
-      var bw = (w / series.length) * 0.6;
-      var x = (w / series.length) * i + (w / series.length - bw) / 2;
-      var bh = Math.abs(s.value) / max * (h - 10);
-      var y = h - bh;
-      svg.push('<rect class="bar' + (s.value < 0 ? ' neg' : '') + '" x="' + x + '" y="' + y + '" width="' + bw + '" height="' + Math.max(1, bh) + '" rx="2"><title>' + s.label + ": " + fmtEurFull(s.value) + '</title></rect>');
-      svg.push('<text x="' + (x + bw / 2) + '" y="' + (h + 14) + '" text-anchor="middle">' + s.label + '</text>');
-    });
-    svg.push('</svg>');
-    el.innerHTML = svg.join("");
-  }
-
-  function monthSeries(obj, key) {
-    return Object.keys(obj).sort().map(function (m) {
-      return { label: m.slice(2), value: key ? (obj[m][key] || 0) : obj[m] };
-    });
-  }
-
-  var savings = monthSeries(data.savings_by_month, null);
-  if (savings.length) barChart(document.getElementById("chart-savings"), savings);
-
-  var trades = Object.keys(data.trades_by_month).sort().map(function (m) {
-    var b = data.trades_by_month[m];
-    return { label: m.slice(2), value: (b.buy_amt || 0) - (b.sell_amt || 0) };
-  });
-  if (trades.length) barChart(document.getElementById("chart-trades"), trades);
-
-  var income = Object.keys(data.income_by_month).sort().map(function (m) {
-    var b = data.income_by_month[m];
-    return { label: m.slice(2), value: (b.dividend || 0) + (b.tax || 0) + (b.tax_vap || 0) + (b.fee || 0) };
-  });
-  if (income.length) barChart(document.getElementById("chart-income"), income);
-
-  // --- Allocation donut ---------------------------------------------------
-  var PALETTE = ["#3b7ddd", "#36b37e", "#f2994a", "#9b51e0", "#e5484d", "#2456a6", "#17a2b8"];
-
-  function donutChart(elSvg, elLegend, weights, labels) {
-    var entries = Object.keys(weights).map(function (k) { return { key: k, label: (labels && labels[k]) || k, value: weights[k] }; });
-    entries.sort(function (a, b) { return b.value - a.value; });
-    var size = 160, r = 60, cx = size / 2, cy = size / 2, circumference = 2 * Math.PI * r;
-    var offset = 0;
-    var arcs = [];
-    entries.forEach(function (e, i) {
-      var len = e.value * circumference;
-      arcs.push('<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + PALETTE[i % PALETTE.length] +
-        '" stroke-width="22" stroke-dasharray="' + len + ' ' + (circumference - len) + '" stroke-dashoffset="' + (-offset) +
-        '" transform="rotate(-90 ' + cx + ' ' + cy + ')"><title>' + e.label + ": " + (e.value * 100).toFixed(1) + '%</title></circle>');
-      offset += len;
-    });
-    elSvg.innerHTML = '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' + arcs.join("") + "</svg>";
-    elLegend.innerHTML = entries.map(function (e, i) {
-      return '<div class="item"><span title="' + e.label + '"><span class="dot" style="background:' + PALETTE[i % PALETTE.length] + '"></span>' + e.label +
-        '</span><span>' + (e.value * 100).toFixed(1) + ' %</span></div>';
-    }).join("");
-  }
-
-  var donutSvg = document.getElementById("chart-donut");
-  var donutLegend = document.getElementById("donut-legend");
-  function renderDonut(tab) {
-    if (tab === "class") {
-      donutChart(donutSvg, donutLegend, data.asset_class_weights || {});
-    } else {
-      donutChart(donutSvg, donutLegend, data.holdings_weights || {}, data.holdings_names || {});
-    }
-  }
-  document.querySelectorAll("#donut-tabs button").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      document.querySelectorAll("#donut-tabs button").forEach(function (b) { b.classList.remove("active"); });
-      btn.classList.add("active");
-      renderDonut(btn.dataset.tab);
-    });
-  });
-  renderDonut("top");
-
-  // --- Realisiert je Instrument: horizontal bar list, top/bottom 5 + rest collapsed ---
-  (function () {
-    var el = document.getElementById("realized-bars");
-    if (!el) return;
-    var entries = Object.keys(data.realized_by_isin_named || {}).map(function (k) {
-      return { name: k, value: data.realized_by_isin_named[k] };
-    });
-    if (!entries.length) {
-      el.innerHTML = '<p class="note">Noch keine realisierten Gewinne.</p>';
-      return;
-    }
-    entries.sort(function (a, b) { return b.value - a.value; });
-    var maxAbs = Math.max.apply(null, entries.map(function (e) { return Math.abs(e.value); })) || 1;
-    function rowHtml(e) {
-      var pct = Math.min(100, Math.abs(e.value) / maxAbs * 50);
-      var cls = e.value >= 0 ? "pos" : "neg";
-      var fillStyle = e.value >= 0 ? ("width:" + pct + "%") : ("width:" + pct + "%");
-      return '<div class="item"><span class="name" title="' + e.name + '">' + e.name + '</span>' +
-        '<span class="bar-track"><span class="bar-fill ' + cls + '" style="' + fillStyle + '"></span></span>' +
-        '<span class="v ' + cls + '">' + fmtEurFull(e.value) + '</span></div>';
-    }
-    var top5 = entries.slice(0, 5);
-    var bottom5 = entries.length > 10 ? entries.slice(-5) : entries.slice(5);
-    var rest = entries.length > 10 ? entries.slice(5, -5) : [];
-    var html = '<div class="bar-list">' + top5.map(rowHtml).join("");
-    if (rest.length) {
-      html += '<details><summary style="cursor:pointer;color:var(--muted);font-size:.8rem;padding:.3rem 0">' + rest.length + ' weitere …</summary>' +
-        rest.map(rowHtml).join("") + '</details>';
-    }
-    html += bottom5.map(rowHtml).join("") + '</div>';
-    el.innerHTML = html;
-  })();
-
-  // --- Verkaufsliste filter -------------------------------------------------
-  (function () {
-    var input = document.getElementById("sell-filter");
-    if (!input) return;
-    input.addEventListener("input", function () {
-      var q = input.value.trim().toLowerCase();
-      document.querySelectorAll("#sell-table tbody tr").forEach(function (tr) {
-        var hay = tr.getAttribute("data-search") || "";
-        tr.style.display = !q || hay.indexOf(q) !== -1 ? "" : "none";
-      });
-    });
-  })();
-
-  // --- Wealth chart: portfolio value vs invested capital vs benchmark ----
-  var wealth = data.wealth || {};
-  function toPoints(series) {
-    return (series || []).map(function (p) { return { t: new Date(p[0]).getTime(), v: p[1] }; });
-  }
-  var SERIES_DEF = [
-    { key: "value", label: "Depotwert", color: "#3b7ddd", dash: "", fill: true },
-    { key: "invested", label: "Einzahlungen", color: "#9aa4bb", dash: "6,4", fill: false },
-    { key: "benchmark", label: wealth.benchmark_name || "Benchmark", color: "#36b37e", dash: "2,3", fill: false },
-  ];
-  var seriesPoints = {};
-  SERIES_DEF.forEach(function (s) { seriesPoints[s.key] = toPoints(wealth[s.key]); });
-  var hidden = {};
-  var currentRangeDays = 0;
-
-  var wealthEl = document.getElementById("chart-wealth");
-  var tooltipEl = document.getElementById("chart-tooltip");
-  var legendEl = document.getElementById("wealth-legend");
-
-  function renderWealthChart() {
-    var w = 760, h = 300, padL = 64, padR = 12, padT = 16, padB = 28;
-    var innerW = w - padL - padR, innerH = h - padT - padB;
-
-    var allT = seriesPoints.invested.map(function (p) { return p.t; });
-    if (!allT.length) { wealthEl.innerHTML = '<p class="note">No cash-flow history to chart.</p>'; return; }
-    var maxT = Math.max.apply(null, allT);
-    var minT = currentRangeDays > 0 ? maxT - currentRangeDays * 86400000 : Math.min.apply(null, allT);
-
-    var visible = SERIES_DEF.filter(function (s) { return !hidden[s.key] && seriesPoints[s.key].length; });
-    var allV = [];
-    visible.forEach(function (s) {
-      seriesPoints[s.key].forEach(function (p) { if (p.t >= minT) allV.push(p.v); });
-    });
-    if (!allV.length) allV = [0, 1];
-    var minV = Math.min(0, Math.min.apply(null, allV));
-    var maxV = Math.max.apply(null, allV) * 1.08 || 1;
-
-    function xScale(t) { return padL + (t - minT) / (maxT - minT || 1) * innerW; }
-    function yScale(v) { return padT + innerH - (v - minV) / (maxV - minV || 1) * innerH; }
-
-    var svg = ['<svg class="chart" width="100%" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="xMinYMin meet" id="wealth-svg">'];
-
-    // gridlines + y labels
-    for (var g = 0; g <= 3; g++) {
-      var v = minV + (maxV - minV) * g / 3;
-      var y = yScale(v);
-      svg.push('<line x1="' + padL + '" y1="' + y + '" x2="' + (w - padR) + '" y2="' + y + '" stroke="#e4e8f1" stroke-width="1"/>');
-      svg.push('<text x="' + (padL - 10) + '" y="' + (y + 3) + '" text-anchor="end">' + fmtEur(v) + '</text>');
-    }
-    // x labels: first / mid / last of visible range (end ones anchored
-    // inward so they can't overflow the viewBox and get clipped)
-    svg.push('<text x="' + padL + '" y="' + (h - 6) + '" text-anchor="start">' + fmtDate(minT).slice(3) + '</text>');
-    svg.push('<text x="' + xScale((minT + maxT) / 2) + '" y="' + (h - 6) + '" text-anchor="middle">' + fmtDate((minT + maxT) / 2).slice(3) + '</text>');
-    svg.push('<text x="' + (w - padR) + '" y="' + (h - 6) + '" text-anchor="end">' + fmtDate(maxT).slice(3) + '</text>');
-
-    visible.forEach(function (s) {
-      var pts = seriesPoints[s.key].filter(function (p) { return p.t >= minT; });
-      if (!pts.length) return;
-      var d = pts.map(function (p, i) { return (i === 0 ? "M" : "L") + xScale(p.t).toFixed(1) + "," + yScale(p.v).toFixed(1); }).join(" ");
-      if (s.fill) {
-        var area = d + " L" + xScale(pts[pts.length - 1].t).toFixed(1) + "," + yScale(minV).toFixed(1) +
-          " L" + xScale(pts[0].t).toFixed(1) + "," + yScale(minV).toFixed(1) + " Z";
-        svg.push('<path d="' + area + '" fill="' + s.color + '" opacity="0.12" stroke="none"/>');
-      }
-      svg.push('<path d="' + d + '" fill="none" stroke="' + s.color + '" stroke-width="2"' + (s.dash ? ' stroke-dasharray="' + s.dash + '"' : "") + "/>");
-    });
-
-    svg.push("</svg>");
-    wealthEl.innerHTML = svg.join("");
-
-    var svgEl = document.getElementById("wealth-svg");
-    svgEl.addEventListener("mousemove", function (evt) {
-      var rect = svgEl.getBoundingClientRect();
-      var relX = (evt.clientX - rect.left) / rect.width * w;
-      var t = minT + (relX - padL) / innerW * (maxT - minT);
-      if (t < minT || t > maxT) { tooltipEl.classList.remove("show"); return; }
-      var lines = [fmtDate(t)];
-      visible.forEach(function (s) {
-        var pts = seriesPoints[s.key];
-        var nearest = pts.reduce(function (best, p) { return Math.abs(p.t - t) < Math.abs(best.t - t) ? p : best; }, pts[0]);
-        lines.push(s.label + ": " + fmtEurFull(nearest.v));
-      });
-      tooltipEl.innerHTML = lines.join("<br>");
-      tooltipEl.style.left = (evt.clientX - rect.left) + "px";
-      tooltipEl.style.top = (evt.clientY - rect.top) + "px";
-      tooltipEl.classList.add("show");
-    });
-    svgEl.addEventListener("mouseleave", function () { tooltipEl.classList.remove("show"); });
-
-    legendEl.innerHTML = SERIES_DEF.filter(function (s) { return seriesPoints[s.key].length; }).map(function (s) {
-      return '<span class="item' + (hidden[s.key] ? " off" : "") + '" data-key="' + s.key + '">' +
-        '<span class="swatch" style="background:' + s.color + '"></span>' + s.label + '</span>';
-    }).join("");
-    legendEl.querySelectorAll(".item").forEach(function (item) {
-      item.addEventListener("click", function () {
-        hidden[item.dataset.key] = !hidden[item.dataset.key];
-        renderWealthChart();
-      });
-    });
-  }
-
-  document.querySelectorAll("#range-tabs button").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      document.querySelectorAll("#range-tabs button").forEach(function (b) { b.classList.remove("active"); });
-      btn.classList.add("active");
-      currentRangeDays = parseInt(btn.dataset.range, 10);
-      renderWealthChart();
-    });
-  });
-  renderWealthChart();
-
-  // --- Goal simulator (pure JS, live, constant-return illustration) -------
-  var els = {
-    saving: document.getElementById("g-saving"),
-    years: document.getElementById("g-years"),
-    ret: document.getElementById("g-return"),
-    inflation: document.getElementById("g-inflation"),
-    wyears: document.getElementById("g-wyears"),
-  };
-  var outs = {
-    saving: document.getElementById("g-saving-out"),
-    years: document.getElementById("g-years-out"),
-    ret: document.getElementById("g-return-out"),
-    inflation: document.getElementById("g-inflation-out"),
-    wyears: document.getElementById("g-wyears-out"),
-  };
-  var startValue = {{ (kpis.value or 0) | float }};
-
-  function recompute() {
-    var S = parseFloat(els.saving.value);
-    var years = parseInt(els.years.value, 10);
-    var rAnnual = parseFloat(els.ret.value) / 100;
-    var infl = parseFloat(els.inflation.value) / 100;
-    var wyears = parseInt(els.wyears.value, 10);
-
-    outs.saving.textContent = S.toFixed(0);
-    outs.years.textContent = years;
-    outs.ret.textContent = (rAnnual * 100).toFixed(1) + " %";
-    outs.inflation.textContent = (infl * 100).toFixed(1) + " %";
-    outs.wyears.textContent = wyears;
-
-    var i = Math.pow(1 + rAnnual, 1 / 12) - 1;
-    var n = years * 12;
-    var fv;
-    if (Math.abs(i) < 1e-9) {
-      fv = startValue + S * n;
-    } else {
-      fv = startValue * Math.pow(1 + i, n) + S * (Math.pow(1 + i, n) - 1) / i;
-    }
-    var m = wyears * 12;
-    var withdrawal;
-    if (Math.abs(i) < 1e-9) {
-      withdrawal = fv / m;
-    } else {
-      withdrawal = (fv * i) / (1 - Math.pow(1 + i, -m));
-    }
-    var realRate = (1 + rAnnual) / (1 + infl) - 1;
-    var iReal = Math.pow(1 + realRate, 1 / 12) - 1;
-    var fvReal;
-    if (Math.abs(iReal) < 1e-9) {
-      fvReal = startValue + S * n;
-    } else {
-      fvReal = startValue * Math.pow(1 + iReal, n) + S * (Math.pow(1 + iReal, n) - 1) / iReal;
-    }
-
-    document.getElementById("g-fv-nominal").textContent = fmtEurFull(fv);
-    document.getElementById("g-fv-real").textContent = fmtEurFull(fvReal);
-    document.getElementById("g-withdrawal").textContent = fmtEurFull(withdrawal) + " / month";
-  }
-
-  document.querySelectorAll("#g-return-presets button").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      document.querySelectorAll("#g-return-presets button").forEach(function (b) { b.classList.remove("active"); });
-      btn.classList.add("active");
-      els.ret.value = btn.dataset.v;
-      recompute();
-    });
-  });
-
-  Object.keys(els).forEach(function (k) { els[k].addEventListener("input", recompute); });
-  recompute();
-})();
+{% include "static/_charts.js" %}
 </script>
 </body>
 </html>

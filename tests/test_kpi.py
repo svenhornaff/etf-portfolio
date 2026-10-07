@@ -4,17 +4,25 @@ docs/dev/portfolio-report-concept.md §6 "Reference tests".
 """
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
+
+import pytest
 
 from etf_portfolio.classify import Event
 from etf_portfolio.kpi import (
+    beta_and_correlation,
     best_worst_month,
     daily_value_series,
+    downside_deviation_annualized,
+    drawdown_durations,
     max_drawdown,
     monthly_returns,
     portfolio_value,
+    sharpe_ratio,
+    sortino_ratio,
     twr_series,
+    unusual_jumps,
     xirr,
 )
 from etf_portfolio.ledger import build_ledger
@@ -135,6 +143,66 @@ def test_fifo_partial_sell_cost_has_no_decimal_dust():
     ]
     ledger = build_ledger(events)
     assert ledger.sells[0].cost == ledger.sells[0].cost.quantize(Decimal("0.01"))
+
+
+def test_drawdown_durations_tracks_peak_to_now():
+    idx = [
+        (date(2025, 1, 1), 1.0),
+        (date(2025, 1, 2), 1.2),  # new peak
+        (date(2025, 1, 3), 1.1),  # -1 day underwater
+        (date(2025, 1, 4), 1.0),  # -2 days underwater
+        (date(2025, 1, 5), 1.3),  # new peak, back to 0
+    ]
+    max_dur, current_dur = drawdown_durations(idx)
+    assert max_dur == 2
+    assert current_dur == 0
+
+
+def test_sharpe_and_sortino_none_without_inputs():
+    assert sharpe_ratio(None, 0.1, 0.02) is None
+    assert sharpe_ratio(0.1, None, 0.02) is None
+    assert sortino_ratio(0.1, 0.0, 0.02) is None  # zero downside deviation -> undefined, not infinite
+    assert sharpe_ratio(0.12, 0.10, 0.02) == pytest.approx(1.0)
+
+
+def test_downside_deviation_ignores_up_days():
+    # 150 flat-ish days with one -2% day should give a small, non-None downside dev
+    idx = [(date(2025, 1, 1) + timedelta(days=i), 1.0 + i * 0.0001) for i in range(150)]
+    idx[100] = (idx[100][0], idx[99][1] * 0.98)
+    dd = downside_deviation_annualized(idx)
+    assert dd is not None and dd > 0
+
+
+def test_beta_and_correlation_perfect_tracker_is_beta_one():
+    base = date(2025, 1, 1)
+    idx = [(base + timedelta(days=i), 1.0 + i * 0.001) for i in range(80)]
+    bench = {base + timedelta(days=i): Decimal(str(100 + i * 0.1)) for i in range(80)}
+    beta, corr = beta_and_correlation(idx, bench)
+    assert beta is not None and beta == pytest.approx(1.0, abs=0.05)
+    assert corr is not None and corr > 0.9
+
+
+def test_beta_and_correlation_none_below_min_obs():
+    base = date(2025, 1, 1)
+    idx = [(base + timedelta(days=i), 1.0 + i * 0.001) for i in range(10)]
+    bench = {base + timedelta(days=i): Decimal("100") for i in range(10)}
+    beta, corr = beta_and_correlation(idx, bench, min_obs=60)
+    assert beta is None and corr is None
+
+
+def test_unusual_jumps_flags_portfolio_only_move():
+    idx = [(date(2025, 1, 1), 1.0), (date(2025, 1, 2), 1.10)]  # +10%, no benchmark data
+    jumps = unusual_jumps(idx, None, threshold=0.05)
+    assert len(jumps) == 1
+    assert jumps[0]["date"] == date(2025, 1, 2)
+    assert jumps[0]["benchmark_ret"] is None
+
+
+def test_unusual_jumps_not_flagged_when_benchmark_shares_the_move():
+    idx = [(date(2025, 1, 1), 1.0), (date(2025, 1, 2), 1.10)]
+    bench = {date(2025, 1, 1): Decimal("100"), date(2025, 1, 2): Decimal("109")}  # also +9%, within threshold
+    jumps = unusual_jumps(idx, bench, threshold=0.05)
+    assert jumps == []
 
 
 def test_vap_checkpoint_matches_reconstructed_qty():

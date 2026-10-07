@@ -36,17 +36,28 @@ the report header — quantities are fixed by the ledger, prices move with
 
 ## Configure
 
-`config.yaml` can map any ISIN to a ticker (Yahoo Finance `.DE` style)
-plus a display name and asset class. You do **not** need a ticker for
-every ISIN you've ever traded: an ISIN without one gets an "implied"
-price derived from its own buy/sell amounts (linearly interpolated
-between trades, flat after the last one), clearly marked `≈` wherever it
-feeds a KPI or chart. `uv run etf-portfolio --list-instruments` lists
-every ISIN ever traded with its current ticker/coverage status, to make
-filling in real tickers for currently-held positions a quick pass. A
-held ISIN with *no* price at all (neither market nor implied) makes
-the portfolio value `n/a`, with the ISIN named — never a silent partial
-sum.
+`instruments.yaml` maps any ISIN to a ticker (Yahoo Finance `.DE`
+style), display name and asset class — reference data, separate from
+`config.yaml`'s settings. You do **not** need a ticker for every ISIN
+you've ever traded: an ISIN without one gets an "implied" price derived
+from its own buy/sell amounts, clearly marked `≈` wherever it feeds a
+KPI or chart. Per holding period, the price is either fully market or
+fully implied — never mixed, so a ticker that only has partial Yahoo
+coverage doesn't produce phantom jumps. `uv run etf-portfolio
+--list-instruments` lists every ISIN ever traded with its current
+ticker/coverage status. A held ISIN with *no* price at all (neither
+market nor implied) makes the portfolio value `n/a`, with the ISIN named
+— never a silent partial sum.
+
+`config.yaml: targets` drives the health-check traffic lights (max
+position size, TER ceiling, drawdown bands — deviations shown, never
+trade advice); `risk_free.rate` feeds Sharpe/Sortino.
+
+Region/sector/currency look-through, weighted TER, and the ETF overlap
+matrix need per-fund factsheet data (`ter`, `regions`, `sectors`,
+`currency`, `top_holdings` in `instruments.yaml`) that this repo can't
+fabricate — those sections render `n/a — Stammdaten fehlen` with the
+specific missing field until you fill them in by hand.
 
 ## Tests
 
@@ -63,11 +74,17 @@ etf_portfolio/
   load.py                    # CSV parsing + validation
   classify.py                # regex rules -> typed events
   ledger.py                  # FIFO positions, cash, realized gains
-  prices.py                  # Yahoo Finance fetch + JSON cache, offline-safe
-  kpi.py                     # contributions, value, XIRR, TWR, drawdown
-  render.py                  # Jinja2 -> one HTML file
-templates/report.html.j2     # single-page report, vanilla-JS charts (no CDN)
-config.yaml                  # tickers, benchmark, goal defaults, overrides
+  prices.py                  # Yahoo Finance fetch + JSON cache, one source per holding period
+  kpi.py                     # contributions, value, XIRR, TWR, drawdown, Sharpe/Sortino/beta...
+  lookthrough.py             # region/sector/currency/TER/overlap from instruments.yaml (all-or-nothing)
+  health.py                  # traffic-light checks against config.yaml: targets
+  narrative.py               # executive-summary sentences (templates + conditions, no LLM at runtime)
+  render.py                  # Jinja2 -> one HTML file, inlines vendored ECharts
+templates/report.html.j2     # report markup + CSS
+templates/static/_charts.js  # ECharts chart bootstrap, included verbatim into the page's <script>
+templates/static/echarts.min.js  # vendored Apache ECharts 5.6.0, inlined at render — zero network calls
+config.yaml                  # settings: benchmark, goal, targets, risk_free, overrides
+instruments.yaml             # reference data: ticker/short/class/TER/regions/... per ISIN
 data/ cache/ out/            # gitignored
 ```
 
