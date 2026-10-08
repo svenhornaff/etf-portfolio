@@ -37,6 +37,24 @@ class Position:
 
 
 @dataclass
+class BuyRecord:
+    """A buy transaction exactly as executed, independent of `lots`.
+
+    `lots` is mutated/consumed by later sells (FIFO), so a later-sold buy can
+    end up with qty 0 or vanish from `lots` entirely. Anything that needs the
+    original executed buy (e.g. execution-vs-close checks) must use this, not
+    `lots` — a real bug: a NVIDIA buy later sold 3 days afterwards was silently
+    skipped by an execution-vs-close check that read `lots`.
+    """
+
+    date: date
+    isin: str
+    name: str | None
+    qty: Decimal
+    cost: Decimal
+
+
+@dataclass
 class SellRecord:
     date: date
     isin: str
@@ -61,6 +79,7 @@ class LedgerResult:
     positions_now: dict[str, Position] = field(default_factory=dict)
     lots: dict[str, list[Lot]] = field(default_factory=lambda: defaultdict(list))
     realized: dict[str, Decimal] = field(default_factory=lambda: defaultdict(Decimal))
+    buys: list[BuyRecord] = field(default_factory=list)
     sells: list[SellRecord] = field(default_factory=list)
     flows: list[tuple[date, Decimal]] = field(default_factory=list)  # DEPOSIT/WITHDRAWAL, booking date
     cash: Decimal = Decimal(0)
@@ -138,6 +157,7 @@ def build_ledger(events: list[Event]) -> LedgerResult:
             if ev.name:
                 pos.name = ev.name
             res.lots[isin].append(Lot(date=row.booking, qty=qty, cost=cost))
+            res.buys.append(BuyRecord(date=row.booking, isin=isin, name=ev.name, qty=qty, cost=cost))
             res.qty_history.append((row.booking, isin, pos.qty))
 
         elif ev.kind == "SELL":

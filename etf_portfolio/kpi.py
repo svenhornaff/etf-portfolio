@@ -634,23 +634,29 @@ def execution_vs_close(
     from the close used to value the position. This makes that divergence
     explicit instead of a vague "rebalancing" guess, per a real case where
     a semiconductor-ETF sale executed ~12% below that day's close.
+
+    Reads `ledger.buys`, not `ledger.lots` — `lots` is mutated/consumed by
+    later sells (FIFO), so a buy later sold ends up with qty 0 or vanishes
+    from `lots` entirely and would be silently skipped. This was a real bug:
+    a NVIDIA buy sold 3 days later was never actually checked despite the
+    original commit message claiming it was "within 1%" of close.
     """
     out: list[dict] = []
-    for isin, lots in ledger.lots.items():
-        series = series_by_isin.get(isin)
+    for buy in ledger.buys:
+        if buy.date != day or not buy.qty:
+            continue
+        series = series_by_isin.get(buy.isin)
         if not series:
             continue
         hit = series.closes.get(day)
         if hit is None:
             continue
-        for lot in lots:
-            if lot.date == day and lot.qty > 0:
-                trade_price = lot.cost / lot.qty
-                diff = float(trade_price / hit) - 1.0
-                if abs(diff) >= threshold:
-                    out.append(
-                        {"isin": isin, "side": "buy", "trade_price": float(trade_price), "close": float(hit), "diff": diff}
-                    )
+        trade_price = buy.cost / buy.qty
+        diff = float(trade_price / hit) - 1.0
+        if abs(diff) >= threshold:
+            out.append(
+                {"isin": buy.isin, "side": "buy", "trade_price": float(trade_price), "close": float(hit), "diff": diff}
+            )
     for sell in ledger.sells:
         if sell.date != day or not sell.qty:
             continue

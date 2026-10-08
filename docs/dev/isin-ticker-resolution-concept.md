@@ -26,6 +26,16 @@ database, no server.
 > leg, now surfaced explicitly via `kpi.execution_vs_close()`. Implied share: 14% → 15% (still
 > under target).
 
+> **Update 2026-10-08: the §1.7 fix for the 06-08 jump had its own bug — see §1.8.** The new
+> `execution_vs_close()` checked buys via `ledger.lots`, which later sells mutate/consume; a buy
+> later fully sold (NVIDIA, sold 3 days after it was bought) was silently never checked, despite
+> the §1.7 commit message claiming it was "within 1%". That specific number happened to be right
+> (confirmed by hand, separately, at the time) but wasn't actually produced by the function it was
+> attributed to. Fixed by adding `ledger.BuyRecord`, an unmutated record of each executed buy,
+> symmetric to the existing `SellRecord`. The report's headline message is unchanged (SEC0's main
+> sell at −12.1% was, and remains, the worst leg) — this was a test-coverage gap that could have
+> produced a wrong headline on a different day's data, not a wrong headline on this one.
+
 ## 0. Framing: this is not a database integration
 
 The instinct that "this needs a database" is understandable — 30 of 34 ever-traded ISINs have no
@@ -229,7 +239,7 @@ every BUY/SELL booked that day against that day's close using the ledger's own t
 When a jump coincides with a ≥3% divergence, the Datenqualität message now names the instrument,
 the side (Kauf/Verkauf), and the exact percentage instead of guessing "rebalancing":
 
-```
+```text
 2026-06-08: Depotwert-Tagesrendite -10.4% (Benchmark -0.5%) — Ausführungskurs (Verkauf iShares
 MSCI Global Semiconductors) weicht -12.1% vom Schlusskurs ab, nicht ein reiner Umschichtungs-Effekt
 ```
@@ -242,6 +252,44 @@ when the gate trips vs. "keine Kursabdeckung" when there's no benchmark series a
 
 6 of the new/rewritten tests live in `tests/test_prices.py` (2) plus the existing
 `tests/test_health_and_narrative.py`; 40/40 tests pass.
+
+### 1.8 Bug B's fix (§1.7) was itself incomplete: BUY-side checks read `lots`, which later sells mutate
+
+`execution_vs_close()` as shipped in §1.7 iterated `ledger.lots` for the BUY side. `lots` is the
+FIFO structure that later *sells* consume in place — a fully-sold lot ends up with `qty == 0` or
+is removed from the list entirely. The NVIDIA buy on 2026-06-08 (`US67066G1040`) was itself fully
+sold on 2026-06-11, three days later; by the time any later code looked at `ledger.lots['US67066G1040']`
+it was `[]`. **The §1.7 commit message's claim "the NVIDIA ... buy was within 1% of close" was true,
+but did not come from running `execution_vs_close()` — it came from an earlier hand calculation
+(180,98 vs. close 179,86) done while manually tracing the CSV, which happened to agree with what
+the function would have said if it had checked NVIDIA at all. It hadn't.**
+
+*Fix*: added `ledger.BuyRecord` (`etf_portfolio/ledger.py`), symmetric to the existing `SellRecord`
+— the original executed buy transaction (date, isin, qty, cost), appended once at BUY time and
+never mutated afterwards, unlike `lots`. `execution_vs_close()` now reads `ledger.buys` for the
+buy side. Reran the function (not by hand) against the real ledger for 2026-06-08 with the
+threshold dropped to 0 to see every leg, not just the one that clears 3%:
+
+```text
+IE000I8KRLL9  sell  -12.1%   (the main 2.102-share order; still the worst leg, report unaffected)
+IE000I8KRLL9  sell   -5.0%   (the same-day Bruchstücke fractional sell, a second leg not mentioned before)
+US67066G1040  buy    +0.6%   (NVIDIA — now actually checked, confirms the §1.7 number was right by luck)
+IE00BF4RFH31  buy    -0.3%   (small-cap ETF — also now actually checked)
+```
+
+The report's chosen message (worst leg, SEC0's main sell at −12.1%) is unchanged — this was a
+test-coverage gap, not a wrong headline number — but the fractional Bruchstücke leg at −5.0% was
+never being checked either, and would have been missed if it had been the worst leg on some other
+day. Added `tests/test_kpi.py::test_execution_vs_close_still_flags_a_buy_that_is_fully_sold_soon_after`,
+which reproduces this exact pattern (buy, then full sell 3 days later) and fails against the old
+`lots`-based implementation. 42/42 tests pass.
+
+**Process note**: this is the second review in a row to catch a claim in a commit message that
+wasn't actually backed by the code it described (§1.2/§1.4 asserted conclusions the code didn't
+yet support; this one asserted a number the new function hadn't actually computed). Worth
+treating "did the function get run against this specific case, with this specific output shown"
+as a harder requirement before writing a result into a commit message, not just "is the code
+plausible."
 
 ## 2. Design
 
