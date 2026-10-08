@@ -45,25 +45,174 @@
 #   as_of: 2026-09-30
 #   source: <factsheet URL>
 
+# Factsheet fields below (ter/aum_usd/launch/domicile/replication/index/
+# regions/sectors/top_holdings/as_of/source) added 2026-10-08 per
+# docs/dev/report-v4-concept.md §4/§9 — manually transcribed from the
+# funds' own factsheets/issuer pages (web search + direct fetch where
+# possible), NOT scraped automatically (no iShares-CSV/Amundi-Excel/
+# OpenFIGI/ECB fetchers built this session, see docs/dev/report-v4-concept.md
+# §12 Leftovers). Every number below has a `source` and `as_of` — where a
+# fund's real breakdown wasn't independently verifiable (Boreas), the
+# field is simply absent rather than guessed; lookthrough.py's
+# all-or-nothing design then reports exactly that, by name.
+
 IE000I8KRLL9:
   short: iShares MSCI Global Semiconductors
   ticker: SEC0.DE
   class: ETF
+  ter: 0.0035
+  # Varies 5.9-6.6bn across sources/dates; ballpark, not exact.
+  aum_usd: 6_500_000_000
+  launch: 2021-08-05
+  domicile: IE
+  replication: physical
+  # Full name wrapped for line length; same index either way.
+  index: >-
+    MSCI ACWI IMI Semiconductors & Semiconductor Equipment
+    ESG Screened Capped
+  # Near-single-sector by construction; "other" catches non-semiconductor
+  # tech (e.g. equipment/materials names classified just outside GICS
+  # Semiconductors).
+  sectors:
+    Technology: 0.99
+    other: 0.01
+  regions:
+    US: 0.641
+    TW: 0.148
+    JP: 0.074
+    KR: 0.055
+    NL: 0.049
+    other: 0.033
+  top_holdings:
+    Micron: 0.0956
+    AMD: 0.0805
+    TSMC: 0.0788
+    NVIDIA: 0.0706
+    Broadcom: 0.0643
+    ASML: 0.0515
+    "Lam Research": 0.0464
+    "Applied Materials": 0.0451
+    "SK Hynix": 0.0447
+    Intel: 0.0347
+  as_of: 2026-08-31
+  # iShares fund fact sheet (country/sector/top-10, 31 Aug 2026);
+  # blackrock.com product page (TER/AUM/launch/domicile/replication).
+  source: iShares fact sheet + blackrock.com product page
 
 FR001400YYJ0:
   short: finanzen.net MSCI World
   ticker: FINZ.DE
   class: ETF
+  ter: 0.0012
+  aum_usd: 37_500_000
+  launch: 2025-09-03
+  domicile: FR
+  replication: physical
+  index: "MSCI World NR"
+  # Confirmed via finanzen.net's own fund page: this is a FEEDER fund,
+  # investing >=85% into Amundi MSCI World UCITS ETF (IE000BI8OT95).
+  # docs/dev/report-v4-concept.md §4.1 flagged this as "check the
+  # prospectus" (unconfirmed); it's now confirmed, not just repeated.
+  # Amundi MSCI World UCITS ETF.
+  feeder_of: IE000BI8OT95
+  # regions/sectors below are standard MSCI World index composition
+  # (stable, well-published), not this specific feeder's own factsheet
+  # breakdown — appropriate given it tracks that index at >=85% exposure,
+  # but labelled as such rather than overclaiming fund-specific precision.
+  regions:
+    US: 0.72
+    JP: 0.06
+    GB: 0.04
+    CA: 0.03
+    FR: 0.028
+    CH: 0.025
+    DE: 0.02
+    AU: 0.015
+    other: 0.062
+  sectors:
+    IT: 0.24
+    Financials: 0.16
+    Industrials: 0.11
+    "Health Care": 0.10
+    "Consumer Discretionary": 0.10
+    Communication: 0.08
+    "Consumer Staples": 0.06
+    Energy: 0.04
+    Materials: 0.03
+    Utilities: 0.03
+    "Real Estate": 0.02
+    other: 0.03
+  as_of: 2026-09-30
+  # finanzen.net ETF page (TER/AUM/launch/domicile/feeder structure);
+  # MSCI World Index standard composition (regions/sectors,
+  # approximate, via Amundi feeder).
+  source: finanzen.net ETF page + MSCI World standard composition
 
 IE00BF4RFH31:
   short: iShares MSCI World Small Cap
   ticker: IUSN.DE
   class: ETF
+  ter: 0.0035
+  # Confirmed live on iShares product page, 07 Oct 2026.
+  aum_usd: 8_824_872_815
+  launch: 2018-03-27
+  domicile: IE
+  replication: physical (optimised sampling)
+  index: MSCI World Small Cap Index (Net)
+  # Confirmed live, 07 Oct 2026.
+  holdings_count: 3583
+  # Coarse on purpose: only US/JP ranges were independently corroborated
+  # across sources (61-64% US, ~12% JP); a finer breakdown wasn't found
+  # with enough agreement to trust, so the rest sits in "other" rather
+  # than being split up by guesswork.
+  regions:
+    US: 0.62
+    JP: 0.12
+    other: 0.26
+  sectors:
+    Industrials: 0.193
+    Financials: 0.142
+    IT: 0.137
+    "Health Care": 0.113
+    "Consumer Discretionary": 0.101
+    other: 0.314
+  # Only one holding+weight was corroborated with any confidence; a
+  # single-entry top_holdings is real data, not a guess, but won't move
+  # the overlap matrix much (expected — small caps barely overlap with
+  # large-cap funds by construction, which this still correctly implies).
+  top_holdings:
+    SanDisk: 0.019
+  # TER/AUM/launch/domicile/replication/holdings_count: 07 Oct 2026.
+  # Sectors: ~Aug 2026 (less current).
+  as_of: 2026-10-07
+  source: iShares/BlackRock product page + issuer sector factsheet
 
 IE000N7LUK04:
   short: Boreas Solactive Quantum Computing
   ticker: QQCC.DE
   class: ETF
+  ter: 0.0049
+  # Per justETF; very small fund (closure risk is material at this size).
+  aum_eur: 4_000_000
+  # USD Acc share class (this ISIN); fund itself launched Sep 2025.
+  launch: 2026-02-23
+  domicile: IE
+  replication: physical
+  index: Solactive Developed Quantum Computing Index
+  holdings_count: 25
+  # Deliberately NOT set: regions/sectors/top_holdings. The issuer's own
+  # site (etfs.lunate.com) is JS-rendered and didn't yield a holdings
+  # table; third-party sources (trackinsight) list NAMES (Quantum
+  # Computing Inc., Rigetti, D-Wave, IBM, Baidu, Intel, Alphabet,
+  # Microsoft, IonQ, Tencent) but no verified WEIGHTS — a name list
+  # isn't enough to build a top_holdings dict without guessing numbers,
+  # so this stays unset. lookthrough.py's all-or-nothing design means
+  # region/sector/overlap look-through across the whole portfolio stays
+  # n/a because of this one fund, named explicitly as the reason.
+  as_of: 2026-10-07
+  # justETF (AUM); Lunate quantm-2pager.pdf + fundinfo PRIIPs KID
+  # (TER/launch/domicile/replication/index/holdings_count).
+  source: justETF + Lunate 2-pager + fundinfo PRIIPs KID
 
 # Historical (fully sold) positions, resolved 2026-10-07 — see
 # docs/dev/isin-ticker-resolution-concept.md. Each confirmed live:
